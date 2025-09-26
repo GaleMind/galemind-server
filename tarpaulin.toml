@@ -1,0 +1,22 @@
+[tool.tarpaulin]
+# Minimum coverage threshold - build will fail if below this percentage
+fail-under = 10.0
+
+# Output formats
+out = ["Html", "Xml"]
+
+# Skip external dependencies
+skip-clean = true
+
+# Include all workspace members
+all = true
+
+# Timeout for tests (in seconds)
+timeout = 120
+
+# Exclude test files from coverage calculation
+exclude-files = [
+    "*/tests/*",
+    "*/test.rs",
+    "*test*.rs"
+]
