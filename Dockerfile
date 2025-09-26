@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:latest-slim-bullseye AS builder
+FROM rust:bullseye AS builder
 
 # Build arguments for metadata
 ARG BUILDTIME
