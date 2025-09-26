@@ -12,3 +12,8 @@ format:
 
 run:
 	cargo run -p galemind start
+docker-build:
+	docker build -t galemind-server .
+
+docker-run:
+	docker run --rm -p 8080:8080 galemind-server
