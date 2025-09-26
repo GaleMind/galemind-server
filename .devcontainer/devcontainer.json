@@ -1,6 +1,8 @@
 {
   "name": "GaleMind Server Dev Environment",
-  "image": "mcr.microsoft.com/devcontainers/rust:1-1-bookworm",
+  "dockerComposeFile": "../docker-compose.dev.yml",
+  "service": "galemind-server",
+  "workspaceFolder": "/workspaces/galemind-server",
   "features": {
     "ghcr.io/devcontainers/features/python:1": {
       "version": "3.12"
@@ -29,7 +31,7 @@
       }
     }
   },
-  "forwardPorts": [8080, 50051],
+  "forwardPorts": [8080, 50051, 5000],
   "portsAttributes": {
     "8080": {
       "label": "REST API",
@@ -38,11 +40,14 @@
     "50051": {
       "label": "gRPC API",
       "onAutoForward": "notify"
+    },
+    "5000": {
+      "label": "MLflow UI",
+      "onAutoForward": "notify"
     }
   },
   "postCreateCommand": "cargo build",
   "remoteUser": "vscode",
-  "workspaceFolder": "/workspaces/galemind-server",
   "mounts": [
     "source=${localWorkspaceFolder}/models,target=/workspaces/galemind-server/models,type=bind,consistency=cached"
   ]
