@@ -1,0 +1,18 @@
+{{- if and .Values.mlflow.enabled .Values.mlflow.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "galemind-server.fullname" . }}-mlflow-pvc
+  labels:
+    {{- include "galemind-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mlflow
+spec:
+  accessModes:
+    - {{ .Values.mlflow.persistence.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.mlflow.persistence.size | default "10Gi" }}
+  {{- if .Values.mlflow.persistence.storageClass }}
+  storageClassName: {{ .Values.mlflow.persistence.storageClass }}
+  {{- end }}
+{{- end }}
