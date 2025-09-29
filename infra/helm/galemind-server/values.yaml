@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: docker.io/yourusername/galemind-server
+  repository: docker.io/galemindzen/galemind-server
   pullPolicy: IfNotPresent
   tag: "latest"
 
