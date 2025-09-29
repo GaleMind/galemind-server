@@ -8,16 +8,6 @@ metadata:
     deployment.kubernetes.io/revision: "1"
     meta.helm.sh/release-name: {{ .Release.Name }}
     meta.helm.sh/release-namespace: {{ .Release.Namespace }}
-    {{- if .Values.vault.enabled }}
-    vault.hashicorp.com/agent-inject: "{{ .Values.vault.annotations.vault.hashicorp.com/agent-inject }}"
-    vault.hashicorp.com/role: "{{ .Values.vault.annotations.vault.hashicorp.com/role }}"
-    vault.hashicorp.com/agent-inject-secret-config: "{{ .Values.vault.secretPath }}"
-    vault.hashicorp.com/agent-inject-template-config: |
-      {{`{{- with secret "` + .Values.vault.secretPath + `" -}}`}}
-      export DATABASE_URL="{{`{{ .Data.data.database_url }}`}}"
-      export API_KEY="{{`{{ .Data.data.api_key }}`}}"
-      {{`{{- end -}}`}}
-    {{- end }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
@@ -34,6 +24,16 @@ spec:
         # Resource annotations for GPU/CPU specifications
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         scheduler.alpha.kubernetes.io/preferred-zone: "gpu-zone"
+        {{- if .Values.vault.enabled }}
+        vault.hashicorp.com/agent-inject: {{ get .Values.vault.annotations "vault.hashicorp.com/agent-inject" | quote }}
+        vault.hashicorp.com/role: {{ get .Values.vault.annotations "vault.hashicorp.com/role" | quote }}
+        vault.hashicorp.com/agent-inject-secret-config: "{{ .Values.vault.secretPath }}"
+        vault.hashicorp.com/agent-inject-template-config: |
+          {{`{{- with secret "`}}{{.Values.vault.secretPath}}{{`" -}}`}}
+          export DATABASE_URL={{`"{{ .Data.data.database_url }}"`}}
+          export API_KEY={{`"{{ .Data.data.api_key }}"`}}
+          {{`{{- end -}}`}}
+        {{- end }}
       labels:
         {{- include "galemind-server.labels" . | nindent 8 }}
         {{- with .Values.podLabels }}
