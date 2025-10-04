@@ -15,7 +15,19 @@ git clone <repository-url>
 cd galemind-server
 ```
 
-2. Install Rust dependencies:
+2. Install dependencies:  
+Make sure you have installed `libssl-dev`! Rust openSSL crate depends on it.  
+For Debian derivatives:
+```bash
+sudo apt install libssl-dev
+```
+
+Make sure you have installed `protobuf-compiler`! Rust grpc_server crate depends on it.  
+For Debian derivatives:  
+```bash
+sudo apt install protobuf-compiler
+```
+
 ```bash
 cargo build
 ```
