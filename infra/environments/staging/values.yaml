@@ -1,0 +1,70 @@
+# Staging environment values
+replicaCount: 2
+
+image:
+  repository: docker.io/yourusername/galemind-server
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+    nvidia.com/gpu: 1
+  requests:
+    cpu: 500m
+    memory: 1Gi
+    nvidia.com/gpu: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+  hosts:
+    - host: galemind-server-staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: galemind-server-staging-tls
+      hosts:
+        - galemind-server-staging.example.com
+
+vault:
+  enabled: true
+  role: "galemind-server-staging"
+  secretPath: "secret/galemind-server/staging"
+
+mlflow:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 20Gi
+  database:
+    enabled: false
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+env:
+  - name: ENVIRONMENT
+    value: "staging"
+  - name: LOG_LEVEL
+    value: "info"
+  - name: RUST_LOG
+    value: "info"
+
+nodeSelector:
+  node-type: "gpu-enabled"

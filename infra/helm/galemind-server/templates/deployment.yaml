@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "galemind-server.fullname" . }}
+  labels:
+    {{- include "galemind-server.labels" . | nindent 4 }}
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+    {{- if .Values.vault.enabled }}
+    vault.hashicorp.com/agent-inject: "{{ .Values.vault.annotations.vault.hashicorp.com/agent-inject }}"
+    vault.hashicorp.com/role: "{{ .Values.vault.annotations.vault.hashicorp.com/role }}"
+    vault.hashicorp.com/agent-inject-secret-config: "{{ .Values.vault.secretPath }}"
+    vault.hashicorp.com/agent-inject-template-config: |
+      {{`{{- with secret "` + .Values.vault.secretPath + `" -}}`}}
+      export DATABASE_URL="{{`{{ .Data.data.database_url }}`}}"
+      export API_KEY="{{`{{ .Data.data.api_key }}`}}"
+      {{`{{- end -}}`}}
+    {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "galemind-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        # Resource annotations for GPU/CPU specifications
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        scheduler.alpha.kubernetes.io/preferred-zone: "gpu-zone"
+      labels:
+        {{- include "galemind-server.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "galemind-server.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- toYaml .Values.env | nindent 12 }}
+            {{- if .Values.mlflow.enabled }}
+            - name: MLFLOW_TRACKING_URI
+              value: "http://{{ include "galemind-server.fullname" . }}-mlflow:{{ .Values.mlflow.service.port }}"
+            - name: MLFLOW_TRACKING_HOST
+              value: "{{ include "galemind-server.fullname" . }}-mlflow"
+            - name: MLFLOW_TRACKING_PORT
+              value: "{{ .Values.mlflow.service.port }}"
+            {{- end }}
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
