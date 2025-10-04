@@ -279,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_discover_models_with_mlflow_source() {
-        let service = ModelDiscoveryService::new(10);
+        let _service = ModelDiscoveryService::new(10);
         let sources = vec![ModelSource::MLFlow {
             base_url: "http://localhost:5000".to_string(),
             api_token: None,
@@ -294,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_discover_all_models_from_mlflow() {
-        let service = ModelDiscoveryService::new(10);
+        let _service = ModelDiscoveryService::new(10);
         let sources = vec![ModelSource::MLFlow {
             base_url: "http://localhost:5000".to_string(),
             api_token: Some("token123".to_string()),
