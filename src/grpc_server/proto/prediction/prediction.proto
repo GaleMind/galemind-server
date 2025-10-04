@@ -25,6 +25,10 @@ service PredictionService
   rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse) {}
   // galemind specific
   rpc ModelInferAsync(stream ModelInferRequest) returns (stream ModelInferResponse) {}
+
+  // Enhanced unified inference with protocol support and streaming
+  rpc UnifiedInfer(UnifiedInferRequest) returns (UnifiedInferResponse) {}
+  rpc UnifiedInferStream(stream UnifiedInferRequest) returns (stream UnifiedInferResponse) {}
 }
 
 message ServerLiveRequest {}
@@ -272,4 +276,151 @@ message InferTensorContents
   // expected by the tensor's shape. The contents must be the flattened,
   // one-dimensional, row-major order of the tensor elements.
   repeated bytes bytes_contents = 8;
+}
+
+// Enhanced unified inference protocol support
+enum InferenceProtocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_GALEMIND = 1;
+  PROTOCOL_OPENAI = 2;
+}
+
+// Content type for message payload
+enum ContentType {
+  CONTENT_TYPE_UNSPECIFIED = 0;
+  CONTENT_TYPE_TEXT = 1;
+  CONTENT_TYPE_BINARY = 2;
+  CONTENT_TYPE_BASE64 = 3;
+}
+
+// Message content with different encoding options
+message MessageContent {
+  ContentType content_type = 1;
+
+  oneof content {
+    string text_content = 2;
+    bytes binary_content = 3;
+    string base64_content = 4;
+  }
+}
+
+// Streaming metadata for chunk handling
+message StreamMetadata {
+  // Unique identifier for the stream session
+  string stream_id = 1;
+
+  // Chunk sequence number for ordering
+  uint64 chunk_sequence = 2;
+
+  // Flag indicating if this is a streaming message
+  bool is_streaming = 3;
+
+  // Flag indicating end of stream
+  bool end_of_stream = 4;
+
+  // Total number of expected chunks (optional, if known)
+  optional uint64 total_chunks = 5;
+}
+
+// Enhanced unified inference request
+message UnifiedInferRequest {
+  // Protocol specification (defaults to Galemind for backward compatibility)
+  InferenceProtocol protocol = 1;
+
+  // Original ModelInferRequest for backward compatibility
+  optional ModelInferRequest legacy_request = 2;
+
+  // Enhanced message content
+  MessageContent content = 3;
+
+  // Streaming metadata
+  optional StreamMetadata stream_metadata = 4;
+
+  // Model identification
+  string model_name = 5;
+  string model_version = 6;
+
+  // Request identification
+  string request_id = 7;
+
+  // Protocol-specific parameters
+  map<string, InferParameter> parameters = 8;
+
+  // Additional metadata for the request
+  map<string, string> metadata = 9;
+}
+
+// Enhanced unified inference response
+message UnifiedInferResponse {
+  // Protocol used for this response
+  InferenceProtocol protocol = 1;
+
+  // Original ModelInferResponse for backward compatibility
+  optional ModelInferResponse legacy_response = 2;
+
+  // Enhanced response content
+  MessageContent content = 3;
+
+  // Streaming metadata
+  optional StreamMetadata stream_metadata = 4;
+
+  // Model identification
+  string model_name = 5;
+  string model_version = 6;
+
+  // Request identification (echoed from request)
+  string request_id = 7;
+
+  // Response status and error information
+  ResponseStatus status = 8;
+
+  // Protocol-specific parameters
+  map<string, InferParameter> parameters = 9;
+
+  // Additional metadata for the response
+  map<string, string> metadata = 10;
+
+  // Performance metrics
+  optional PerformanceMetrics metrics = 11;
+}
+
+// Response status information
+message ResponseStatus {
+  enum StatusCode {
+    STATUS_UNKNOWN = 0;
+    STATUS_SUCCESS = 1;
+    STATUS_ERROR = 2;
+    STATUS_TIMEOUT = 3;
+    STATUS_RATE_LIMITED = 4;
+    STATUS_INVALID_REQUEST = 5;
+  }
+
+  StatusCode code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+// Performance and usage metrics
+message PerformanceMetrics {
+  // Processing time in milliseconds
+  uint64 processing_time_ms = 1;
+
+  // Queue time in milliseconds
+  uint64 queue_time_ms = 2;
+
+  // Token usage (for LLM models)
+  optional TokenUsage token_usage = 3;
+
+  // Memory usage in bytes
+  optional uint64 memory_usage_bytes = 4;
+
+  // GPU utilization percentage (0-100)
+  optional float gpu_utilization = 5;
+}
+
+// Token usage information for language models
+message TokenUsage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens = 3;
 }
