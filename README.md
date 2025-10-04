@@ -58,14 +58,14 @@ cargo fmt
 
 ### Environment Variables
 
-Set the required environment variable:
+Set the required environment variables in the `.env` file (recommended):
 ```bash
 export MODELS_DIR=/path/to/your/models
 ```
 
 ### Starting the Server
 
-Using Makefile:
+Using Makefile (automatically loads environment variables from `.env`):
 ```bash
 make run
 ```
