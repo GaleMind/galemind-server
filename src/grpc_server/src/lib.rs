@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{Request, Response, Status, transport::Server};
 
 // Include the generated protobuf code
 pub mod grpc_server {
@@ -19,13 +19,13 @@ pub mod grpc_server {
 }
 
 use grpc_server::{
-    model_metadata_response::TensorMetadata,
-    prediction_service_server::{PredictionService, PredictionServiceServer},
     ContentType, InferenceProtocol, MessageContent, ModelInferRequest, ModelInferResponse,
     ModelMetadataRequest, ModelMetadataResponse, ModelReadyRequest, ModelReadyResponse,
     PerformanceMetrics, ResponseStatus, ServerLiveRequest, ServerLiveResponse,
     ServerMetadataRequest, ServerMetadataResponse, ServerReadyRequest, ServerReadyResponse,
     StreamMetadata, TokenUsage, UnifiedInferRequest, UnifiedInferResponse,
+    model_metadata_response::TensorMetadata,
+    prediction_service_server::{PredictionService, PredictionServiceServer},
 };
 
 pub struct PredictionServiceImpl {

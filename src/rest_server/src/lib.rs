@@ -13,7 +13,7 @@ use crate::server::new_server_router;
 use crate::unified_endpoints::new_unified_router;
 use anyhow::Result;
 use async_trait::async_trait;
-use axum::{serve, Router};
+use axum::{Router, serve};
 use foundation::{InferenceServerBuilder, InferenceServerConfig, ModelDiscoveryService};
 use std::error::Error;
 use std::net::SocketAddr;

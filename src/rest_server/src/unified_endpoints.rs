@@ -4,11 +4,11 @@ use std::{
 };
 
 use axum::{
+    Router,
     extract::{Json, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 use foundation::ModelDiscoveryService;
 use serde_json::json;
