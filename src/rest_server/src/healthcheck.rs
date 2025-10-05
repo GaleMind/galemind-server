@@ -1,4 +1,4 @@
-use axum::{Router, extract::Path, response::IntoResponse, routing::get};
+use axum::{extract::Path, response::IntoResponse, routing::get, Router};
 use std::collections::HashMap;
 
 async fn liveness_handler(Path(_): Path<HashMap<String, String>>) -> impl IntoResponse {
