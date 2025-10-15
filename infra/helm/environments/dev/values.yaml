@@ -4,6 +4,7 @@ replicaCount: 1
 image:
   tag: "dev"
   pullPolicy: Always
+  # digest: from github workflow before using this value.yaml
 
 resources:
   limits:

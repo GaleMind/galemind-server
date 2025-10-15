@@ -1,0 +1,91 @@
+name: k8s-deploy.yml
+on:   # al completamento di un workflow che termina in immagine e che sia taggato con "k8s_v*"
+  workflow_run:
+    workflows:
+     - "Build and Push Docker Image"
+    types:
+      - completed
+    tag:
+      - 'k8s_v*'
+
+jobs:
+  after-success:
+    runs-on: ubuntu-latest
+    # Esegui solo se il workflow primario è andato a buon fine
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-build-info
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          # now docker_image_digest.txt contains the digest of the image
+          # that was pushed by last successful docker pushing workflow on this commit
+
+      - name: Kubectl configure
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+
+      - name: Helm setup
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.3'
+
+      - name: Variable assignment and helm value customization
+        id: vars
+        run: |
+          # Previous successful branch name
+          BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+          
+          # FIXME
+          # Sanitizza il nome del branch per usarlo come tag (sostituisci / con -)
+          IMAGE_TAG=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
+          
+          # Choose appropriate values.yaml
+          if [ "$BRANCH_NAME" == "main" ]; then
+            VALUES_PATH="production"
+            ENV="prod"
+          elif [ "$BRANCH_NAME" == "develop" ]; then
+            VALUES_PATH="dev"
+            ENV="dev"
+          else
+            VALUES_PATH="staging"
+            ENV="staging"
+          fi
+          
+          VALUE_FILE=environments/$VALUE_PATH/values.yaml
+          # FROM artifact download
+          IMAGE_DIGEST=$(cat docker_image_digest.txt)
+
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "values_file=$VALUES_FILE" >> $GITHUB_OUTPUT
+
+      - name: Login Docker Registry
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Deploy con Helm
+        run: |
+          helm upgrade --install galemind-server-$ENV ./infra/helm/galemind-server \
+            --namespace galemind-$ENV \
+            --create-namespace \
+            -f ./infra/helm/environments/$VALUES_PATH/values.yaml \
+            --set image.repository=your-registry/galemind-server \
+            --set image.tag=${{ steps.vars.outputs.image_tag }} \
+            --set image.digest=$IMAGE_DIGEST \
+            --wait \
+            --timeout 5m
+
+      - name: Verifica deployment
+        run: |
+          kubectl rollout status deployment/galemind-server \
+            -n galemind-$ENV \
+            --timeout=5m
