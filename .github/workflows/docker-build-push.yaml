@@ -70,8 +70,9 @@ jobs:
         run: |
           # export artifact to external workflows
           echo "${{ steps.buildandpush.outputs.digest }}" > docker_image_digest.txt
-          # export imagename to further jobs in this workflow
-          echo "imageid=${{ fromJSON(steps.buildandpush.meta.outputs.json).labels['org.opencontainers.image.title'] }}@${{ steps.buildandpush.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          # export imageid to further jobs in this workflow; 
+          # docker/build-push-action pushes "docker.io/***/galemind-server:develop,docker.io/***/galemind-server:staging"
+          echo "imageid=$GITHUB_REPOSITORY:${{ steps.buildandpush.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
       - name: My will to posterity
         uses: actions/upload-artifact@v4
