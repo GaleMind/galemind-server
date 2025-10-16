@@ -1,5 +1,6 @@
-name: k8s-deploy.yml
-on:   # al completamento di un workflow che termina in immagine e che sia taggato con "k8s_v*"
+name: Kubernetes deployment
+
+on:   # upon successful workflow AND tag "k8s_v*"
   workflow_run:
     workflows:
      - "Build and Push Docker Image"
@@ -11,7 +12,6 @@ on:   # al completamento di un workflow che termina in immagine e che sia taggat
 jobs:
   after-success:
     runs-on: ubuntu-latest
-    # Esegui solo se il workflow primario è andato a buon fine
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
 
