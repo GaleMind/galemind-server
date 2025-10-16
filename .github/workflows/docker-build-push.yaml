@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
-      pushedimageid: ${{ steps.valuesharing.outputs.imageid }}
+      pushedimageid: ${{ steps.valuesharing.outputs.pushedimageid }}
 
     steps:
       - name: Checkout code
@@ -74,7 +74,8 @@ jobs:
           # export imageid to further jobs in this workflow; 
           #   docker/build-push-action pushes 
           #      "docker.io/***/galemind-server:develop,docker.io/***/galemind-server:staging"
-          echo "imageid=${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_IMAGE }}@${{ steps.buildandpush.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          IMGID="${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_IMAGE }}@${{ steps.buildandpush.outputs.digest }}"
+          echo "pushedimageid=$IMGID" >> "$GITHUB_OUTPUT"
 
       - name: My will to posterity
         uses: actions/upload-artifact@v4
@@ -82,6 +83,8 @@ jobs:
           name: docker-build-info
           path: |
             docker_image_digest.txt
+            
+
   security-scan:
     runs-on: ubuntu-latest
     needs: build
