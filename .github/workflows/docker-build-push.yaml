@@ -62,9 +62,10 @@ jobs:
             BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+
       - name: Leave my will
         run: |
-          echo "${{ fromJSON(steps.buildandpush.outputs.json).digest['description'] }}" > docker_image_digest.txt
+          echo "${{ steps.buildandpush.outputs.digest }}" > docker_image_digest.txt
       - name: My will to posterity
         uses: actions/upload-artifact@v4
         with:

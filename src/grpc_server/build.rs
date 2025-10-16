@@ -10,4 +10,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(&["proto/prediction/prediction.proto"], &["proto"])?;
     Ok(())
 }
-
