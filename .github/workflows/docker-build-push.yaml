@@ -15,6 +15,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pushedimageid: ${{ steps.valuesharing.outputs.pushedimageid }}
 
     steps:
       - name: Checkout code
@@ -69,6 +71,7 @@ jobs:
         run: |
           # export artifact to external workflows
           echo "${{ steps.buildandpush.outputs.digest }}" > docker_image_digest.txt
+          echo "pushedimageid=${{ steps.buildandpush.outputs.digest }}"  >> "$GITHUB_OUTPUT"
 
       - name: My will to posterity
         uses: actions/upload-artifact@v4
@@ -87,7 +90,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         env:
-          IMGID: "${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_IMAGE }}@${{ needs.build.outputs.digest }}"
+          IMGID: "${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_IMAGE }}@${{ needs.build.outputs.pushedimageid }}"
         with:
           image-ref: ${{ env.IMGID }}
           format: 'sarif'
