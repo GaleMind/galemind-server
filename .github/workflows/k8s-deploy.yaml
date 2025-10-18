@@ -6,6 +6,9 @@ on:   # upon successful workflow AND tag "k8s_v*"
      - "Build and Push Docker Image"
     types:
       - completed
+  push:
+    tags:
+      - 'k8s_v*'
 
 jobs:
   check-tag:
