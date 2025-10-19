@@ -11,35 +11,38 @@ on:   # upon successful workflow AND tag "k8s_v*"
       - 'k8s_v*'
 
 jobs:
-  check-tag:
+  check-viability:
+    # just to isolate rules to trigger Kubernetes deployment
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     outputs:
-      should_deploy: ${{ steps.check_tag.outputs.should_deploy }}
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
 
     steps:
 
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Check if K8s deployment is requested via tag
-        id: check_tag
+      - name: Check if K8s deployment is requested
+        id: check
         run: |
-          TAGS=$(git tag --points-at HEAD | grep '^k8s_v' || true)
-          
-          if [ -z "$TAGS" ]; then
-            echo "No k8s_v tag found on this commit, skipping deploy"
-            echo "should_deploy=false" >> $GITHUB_OUTPUT
-          else        
-            echo "Found tag(s): $TAGS"
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          has_k8s_tag=$(git tag --points-at HEAD | grep '^k8s_v' || true) 
+          default="should_deploy=false"
+          if [[ -z "$TAGS" ]]; then
+            echo "No k8s_v tag found on this commit... it should not trigger a K8s deployment."
+          else
+            if [[ "${{ github.event_name }}" == 'workflow_run' ]] \
+                  && [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
+              echo "A Docker image build seem to have just failes ... therefore a K8s deployment cannot be triggered." 
+            else
+              echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }}... I'll try to deploy to K8s."
+              echo "should_deploy=true" >> $GITHUB_OUTPUT   
+            fi
           fi
-
 
   deploy:
     runs-on: ubuntu-latest
-    needs: check-tag
-    if: needs.check-tag.outputs.should_deploy == 'true'
+    needs: check-viability
+    if: needs.check-viability.outputs.should_deploy == 'true'
 
     steps:
 
