@@ -25,14 +25,14 @@ jobs:
       - name: Check if K8s deployment is requested
         id: check
         run: |
-          has_k8s_tag=$(git tag --points-at HEAD | grep '^k8s_v' || true) 
+          TAGS=$(git tag --points-at HEAD | grep '^k8s_v' || true) 
           default="should_deploy=false"
           if [[ -z "$TAGS" ]]; then
             echo "No k8s_v tag found on this commit... it should not trigger a K8s deployment."
           else
             if [[ "${{ github.event_name }}" == 'workflow_run' ]] \
                   && [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
-              echo "A Docker image build seem to have just failes ... therefore a K8s deployment cannot be triggered." 
+              echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
             else
               echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }}... I'll try to deploy to K8s."
               echo "should_deploy=true" >> $GITHUB_OUTPUT   
