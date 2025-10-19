@@ -34,7 +34,7 @@ jobs:
                   && [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
               echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
             else
-              echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }}... I'll try to deploy to K8s."
+              echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }} event... I'll try to deploy to K8s."
               echo "should_deploy=true" >> $GITHUB_OUTPUT   
             fi
           fi
