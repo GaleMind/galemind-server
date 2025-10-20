@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_deploy: ${{ steps.check.outputs.should_deploy }}
+      wf_run_id: ${{ steps.check.outputs.wf_run_id }}
+      wf_branch: ${{ steps.check.outputs.wf_branch }}
+
     steps:
 
       - name: Minimal code checkout
@@ -39,6 +42,8 @@ jobs:
             else
               echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }} event... I'll try to deploy to K8s."
               current_check=true   
+              wf_run_id="${{ github.event.workflow_run.id }}"
+              wf_branch="${{ github.event.workflow_run.head_branch }}"
             fi
           else
             # upon tag push
@@ -49,15 +54,20 @@ jobs:
               # last  run riuscito del build per questo commit
               BUILD_RUN=$(gh api \
                 "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-                --jq '[.workflow_runs[] | select(.name == "Build and Push Docker Image")] | sort_by(.id) | .[-1].conclusion | @text ')         
-              if [[ "$BUILD_RUN" == "success" ]]; then
+                --jq '[.workflow_runs[] | select(.name == "Build and Push Docker Image")] 
+                      | sort_by(.id) | .[-1]|{"id":.id, "conclusion": .conclusion, "branch":.head_branch}')         
+              if [[ $(jq -r '.conclusion ' <<<"$BUILD_RUN") == "success" ]]; then
                 current_check=true
+                wf_run_id=$(jq -r '.id' <<<"$BUILD_RUN")
+                wf_branch=$(jq -r '.branch' <<<"$BUILD_RUN")
               else
                 echo "Last Docker build was not 'successful', won't try to deploy to Kubernetes"
               fi
             fi
           fi
           echo "should_deploy=$current_check" >> $GITHUB_OUTPUT
+          echo "wf_run_id=$wf_run_id" >> $GITHUB_OUTPUT
+          echo "wf_branch=$wf_branch" >> $GITHUB_OUTPUT
 
   deploy:
     runs-on: ubuntu-latest
@@ -74,7 +84,7 @@ jobs:
         with:
           name: docker-build-info
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ needs.check-viability.outputs.wf_run_id }}
           # now docker_image_digest.txt contains the digest of the image
           # that was pushed by last successful docker pushing workflow on this commit
 
@@ -93,7 +103,7 @@ jobs:
         id: vars
         run: |
           # Previous successful branch name
-          BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+          BRANCH_NAME="${{ needs.check-viability.outputs.wf_branch }}"
           
           # FIXME
           # Sanitizza il nome del branch per usarlo come tag (sostituisci / con -)
