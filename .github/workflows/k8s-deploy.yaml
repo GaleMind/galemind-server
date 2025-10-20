@@ -1,11 +1,14 @@
 name: Kubernetes deployment
 
-on:   # upon successful workflow AND tag "k8s_v*"
+on:   # upon successful workflow on main branch, OR upong tagging "k8s_v*"
   workflow_run:
     workflows:
      - "Build and Push Docker Image"
     types:
       - completed
+    branches:
+      - main
+
   push:
     tags:
       - 'k8s_v*'
@@ -16,28 +19,45 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_deploy: ${{ steps.check.outputs.should_deploy }}
-
     steps:
 
-      - name: Checkout code
+      - name: Minimal code checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Check if K8s deployment is requested
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          TAGS=$(git tag --points-at HEAD | grep '^k8s_v' || true) 
-          default="should_deploy=false"
-          if [[ -z "$TAGS" ]]; then
-            echo "No k8s_v tag found on this commit... it should not trigger a K8s deployment."
-          else
-            if [[ "${{ github.event_name }}" == 'workflow_run' ]] \
-                  && [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
+          current_check=false
+          if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
+            # upon workflow_run
+            if [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
               echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
             else
               echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }} event... I'll try to deploy to K8s."
-              echo "should_deploy=true" >> $GITHUB_OUTPUT   
+              current_check=true   
+            fi
+          else
+            # upon tag push
+            TAGS=$(git tag --points-at HEAD | grep '^k8s_v' || true)  
+            if [[ -z "$TAGS" ]]; then
+              echo "No k8s_v tag found on this commit... it should not trigger a K8s deployment."
+            else  
+              # last  run riuscito del build per questo commit
+              BUILD_RUN=$(gh api \
+                "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
+                --jq '[.workflow_runs[] | select(.name == "Build and Push Docker Image")] | sort_by(.id) | .[-1].conclusion | @text ')         
+              if [[ "$BUILD_RUN" == "success" ]]; then
+                current_check=true
+              else
+                echo "Last Docker build was not 'successful', won't try to deploy to Kubernetes"
+              fi
             fi
           fi
+          echo "should_deploy=$current_check" >> $GITHUB_OUTPUT
 
   deploy:
     runs-on: ubuntu-latest
