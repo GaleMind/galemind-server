@@ -122,12 +122,11 @@ jobs:
           fi
           
           VALUE_FILE=environments/$VALUE_PATH/values.yaml
-          # FROM artifact download
-          IMAGE_DIGEST=$(cat docker_image_digest.txt)
 
           echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "values_file=$VALUES_FILE" >> $GITHUB_OUTPUT
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
 
       - name: Login Docker Registry
         run: |
@@ -135,6 +134,9 @@ jobs:
 
       - name: Deploy con Helm
         run: |
+          ENV=${{ steps.vars.outputs.environment }}
+          # FROM artifact download
+          IMAGE_DIGEST=$(cat docker_image_digest.txt)
           helm upgrade --install galemind-server-$ENV ./infra/helm/galemind-server \
             --namespace galemind-$ENV \
             --create-namespace \
@@ -148,5 +150,5 @@ jobs:
       - name: Verifica deployment
         run: |
           kubectl rollout status deployment/galemind-server \
-            -n galemind-$ENV \
+            -n galemind-${{ steps.vars.outputs.environment }} \
             --timeout=5m
