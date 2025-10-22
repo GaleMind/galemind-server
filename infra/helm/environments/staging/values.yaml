@@ -9,11 +9,11 @@ resources:
   limits:
     cpu: 1000m
     memory: 2Gi
-    nvidia.com/gpu: 1
+    #nvidia.com/gpu: 1
   requests:
     cpu: 500m
     memory: 1Gi
-    nvidia.com/gpu: 1
+    #nvidia.com/gpu: 1
 
 autoscaling:
   enabled: true
@@ -65,5 +65,5 @@ env:
   - name: RUST_LOG
     value: "info"
 
-nodeSelector:
-  node-type: "gpu-enabled"
+#nodeSelector:
+#  node-type: "gpu-enabled"

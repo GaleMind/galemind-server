@@ -9,11 +9,11 @@ resources:
   limits:
     cpu: 2000m
     memory: 4Gi
-    nvidia.com/gpu: 2
+    #nvidia.com/gpu: 2
   requests:
     cpu: 1000m
     memory: 2Gi
-    nvidia.com/gpu: 2
+    #nvidia.com/gpu: 2
 
 autoscaling:
   enabled: true
@@ -69,14 +69,14 @@ env:
   - name: RUST_LOG
     value: "warn"
 
-nodeSelector:
-  node-type: "gpu-enabled"
-  zone: "production"
-
-tolerations:
-  - key: "nvidia.com/gpu"
-    operator: "Exists"
-    effect: "NoSchedule"
+#nodeSelector:
+#  node-type: "gpu-enabled"
+#  zone: "production"
+#
+#tolerations:
+#  - key: "nvidia.com/gpu"
+#    operator: "Exists"
+#    effect: "NoSchedule"
 
 affinity:
   nodeAffinity:
