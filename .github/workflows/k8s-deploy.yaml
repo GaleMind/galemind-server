@@ -146,7 +146,7 @@ jobs:
           ENV=${{ steps.vars.outputs.environment }}
           # FROM artifact download
           IMAGE_DIGEST=$(cat docker_image_digest.txt)
-          $DOCKER_PREFIX=$(sed 's:[^a-zA-Z0-9]::g' <<<"${{ vars.DOCKER_REGISTRY }}")
+          DOCKER_PREFIX=$(sed 's:[^a-zA-Z0-9]::g' <<<"${{ vars.DOCKER_REGISTRY }}")
           kubectl create secret docker-registry ${DOCKER_PREFIX}-secret \
             --docker-server=${{ vars.DOCKER_REGISTRY }} \
             --docker-username=${{ secrets.DOCKER_USERNAME }} \
