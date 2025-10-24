@@ -146,16 +146,25 @@ jobs:
           ENV=${{ steps.vars.outputs.environment }}
           # FROM artifact download
           IMAGE_DIGEST=$(cat docker_image_digest.txt)
-          helm upgrade --install galemind-server-$ENV ./infra/helm/galemind-server \
+          $DOCKER_PREFIX=$(sed 's:[^a-zA-Z0-9]::g' <<<"${{ vars.DOCKER_REGISTRY }}")
+          kubectl create secret docker-registry ${DOCKER_PREFIX}-secret \
+            --docker-server=${{ vars.DOCKER_REGISTRY }} \
+            --docker-username=${{ secrets.DOCKER_USERNAME }} \
+            --docker-password=${{ secrets.DOCKER_PASSWORD }} \
+            --docker-email="galemind.zen@gmail.com" \
+            --namespace=galemind-$ENV || true # should it already exist, ignore the error
+          helm upgrade galemind-server-$ENV ./infra/helm/galemind-server \
+            --install \
             --namespace galemind-$ENV \
             --create-namespace \
             -f ${{ steps.vars.outputs.value_file }} \
+            --set imagePullSecrets[0].name=${DOCKER_PREFIX}-secret \
             --set image.repository=${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_IMAGE }} \
             --set image.tag=${{ steps.vars.outputs.image_tag }} \
             --set image.digest=$IMAGE_DIGEST \
             --atomic \
             --wait \
-            --timeout 5m
+            --timeout 2m
 
       - name: Verifica deployment
         run: |
