@@ -115,7 +115,8 @@ mlflow:
     enabled: true
     accessMode: ReadWriteOnce
     size: 10Gi
-    storageClass: ""
+    # TODO a regime portare su "retain"
+    storageClass: "linode-block-storage"
 
   resources:
     limits:
