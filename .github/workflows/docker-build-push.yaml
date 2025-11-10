@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # avoid building if reacting to simple tag push
-    if: startsWith(github.ref,'ref/heads')
+    if: github.ref_type == 'branch'
     outputs:
       pushedimageid: ${{ steps.valuesharing.outputs.pushedimageid }}
     steps:
