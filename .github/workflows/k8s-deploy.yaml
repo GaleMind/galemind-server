@@ -141,7 +141,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Deploy con Helm
+      - name: Helm deployment
         run: |
           ENV=${{ steps.vars.outputs.environment }}
           # FROM artifact download
@@ -164,9 +164,9 @@ jobs:
             --set image.digest=$IMAGE_DIGEST \
             --atomic \
             --wait \
-            --timeout 2m
+            --timeout 10m
 
-      - name: Verifica deployment
+      - name: Deployment check
         run: |
           kubectl rollout status deployment/galemind-server \
             -n galemind-${{ steps.vars.outputs.environment }} \
