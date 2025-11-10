@@ -1,6 +1,8 @@
 name: Kubernetes deployment
 
-on:   # upon successful workflow on main branch, OR upong tagging "k8s_v*"
+on:
+  # upon successful workflow on main/develop branch, provided k8  ,
+  # OR upong simply tagging "k8s_v*"
   workflow_run:
     workflows:
      - "Build and Push Docker Image"
@@ -8,6 +10,7 @@ on:   # upon successful workflow on main branch, OR upong tagging "k8s_v*"
       - completed
     branches:
       - main
+      - develop
 
   push:
     tags:
@@ -29,29 +32,32 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check if K8s deployment is requested
+      - name: Deployment request viability check
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           current_check=false
-          if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
-            # upon workflow_run
-            if [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
-              echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
-            else
-              echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }} event... I'll try to deploy to K8s."
-              current_check=true   
-              wf_run_id="${{ github.event.workflow_run.id }}"
-              wf_branch="${{ github.event.workflow_run.head_branch }}"
-            fi
+          wf_run_id=""
+          wf_branch=""
+          TAGS=$(git tag --points-at HEAD | grep '^k8s_v' || true) 
+          # need at least a k8s_v TAG on this commit 
+          if [[ -z "$TAGS" ]]; then
+            echo "No k8s_v tag found on this commit... it should not trigger a K8s deployment."
           else
-            # upon tag push
-            TAGS=$(git tag --points-at HEAD | grep '^k8s_v' || true)  
-            if [[ -z "$TAGS" ]]; then
-              echo "No k8s_v tag found on this commit... it should not trigger a K8s deployment."
-            else  
-              # last  run riuscito del build per questo commit
+            if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
+              # upon workflow_run
+              if [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
+                echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
+              else
+                echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }} event... I'll try to deploy to K8s."
+                current_check=true   
+                wf_run_id="${{ github.event.workflow_run.id }}"
+                wf_branch="${{ github.event.workflow_run.head_branch }}"
+              fi
+            else
+              # upon simple tag push 
+              # check if  last Docker build run was successfull for this commit
               BUILD_RUN=$(gh api \
                 "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
                 --jq '[.workflow_runs[] | select(.name == "Build and Push Docker Image")] 
@@ -75,7 +81,7 @@ jobs:
 
     steps:
 
-      - name: no-viability
+      - name: No viable deploy
         run: |
           if [[ ${{ needs.check-viability.outputs.should_deploy }} != 'true' ]] ; then 
             echo "Nothing to do!"
@@ -85,7 +91,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Download artifact
+      - name: Previous workflow data via artifact download
         uses: actions/download-artifact@v4
         with:
           name: docker-build-info
@@ -94,7 +100,7 @@ jobs:
           # now docker_image_digest.txt contains the digest of the image
           # that was pushed by last successful docker pushing workflow on this commit
 
-      - name: Kubectl configure
+      - name: Kubectl configuration
         uses: azure/k8s-set-context@v3
         with:
           method: kubeconfig
@@ -105,7 +111,7 @@ jobs:
         with:
           version: 'v3.12.3'
 
-      - name: Variable assignment and helm value customization
+      - name: Variable assignment and Helm value customization
         id: vars
         run: |
           # Previous successful branch name
@@ -134,7 +140,8 @@ jobs:
           echo "value_file=$VALUE_FILE" >> $GITHUB_OUTPUT
           echo "environment=$ENV" >> $GITHUB_OUTPUT
 
-      - name: Log in to Docker Hub
+
+      - name: Docker Hub login
         uses: docker/login-action@v3
         with:
           registry: ${{ vars.DOCKER_REGISTRY }}
@@ -166,7 +173,8 @@ jobs:
             --wait \
             --timeout 10m
 
-      - name: Deployment check
+
+      - name: Helm deployment check
         run: |
           kubectl rollout status deployment/galemind-server \
             -n galemind-${{ steps.vars.outputs.environment }} \
