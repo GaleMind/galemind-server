@@ -15,7 +15,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # avoid building if reacting to simple tag push
-    if: github.ref_type == 'branch'
     outputs:
       pushedimageid: ${{ steps.valuesharing.outputs.pushedimageid }}
     steps:
@@ -66,8 +65,6 @@ jobs:
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
 
-
-
       - name: Lay down my will
         id: valuesharing
         run: |
@@ -82,8 +79,6 @@ jobs:
           path: |
             docker_image_digest.txt
             
-
-
 
   security-scan:
     runs-on: ubuntu-latest
