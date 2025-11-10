@@ -50,13 +50,13 @@ jobs:
               if [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
                 echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
               else
-                if [[ $TAGS =~ ^refs/tags/v.+_k8s ]] ; then
+                if [[ $TAGS =~ ^refs/tags/v.+\+k8s ]] ; then
                 echo "Found tag(s): $TAGS and I've been triggered by a ${{ github.event_name }} event... I'll try to deploy to K8s."
                 current_check=true   
                 wf_run_id="${{ github.event.workflow_run.id }}"
                 wf_branch="${{ github.event.workflow_run.head_branch }}"
                 else
-                  echo "No '*_k8s' tag found in [$TAGS] ... won't trigger any K8s deployment"
+                  echo "No '*+k8s' tag found in [$TAGS] ... won't trigger any K8s deployment"
                 fi
               fi
             else
