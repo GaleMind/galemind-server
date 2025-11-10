@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # avoid building if reacting to simple tag push
-    if: github.event.commits != '[]'
+    if: github.event.commits.*.length == 0
     outputs:
       pushedimageid: ${{ steps.valuesharing.outputs.pushedimageid }}
     steps:

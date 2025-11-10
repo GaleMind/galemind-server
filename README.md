@@ -8,11 +8,11 @@ GaleMind ML Inference Server v0.1 - A high-performance machine learning inferenc
 - **Make**: Required for using the Makefile commands
 
 # Github deployment notes
-- pushing on main or develop triggers 
+- pushing on main or develop will trigger 
   - Docker imange building, 
   - and (upon success) pushing to `galemindzen`'s _Docker hub_ private repo
-- tagging any commit with `v*` triggers its docker image building and (upon success) pushing to `galemindzen`'s _Docker hub_ private repo ; if tag ends with `+k8s` then also get the same effect as `k8s_v*` tag
-- tagged any commit with `k8s_v*` or triggers its k8s deployment (upon successful last Docker image building and pushing) onto Galemind's Kubernetes cluster on Linode
+- pushing a `v*` tag onto any commit will trigger its docker image building and (upon success) pushing to `galemindzen`'s _Docker hub_ private repo ; if tag ends with `+k8s` then also get the same effect as `k8s_v*` tag
+- pushing a `k8s_v*` tag tagging onto any commit will trigger its k8s deployment (upon successful last Docker image building and pushing) onto Galemind's Kubernetes cluster on Linode
 
 ## Installation
 
