@@ -6,7 +6,7 @@ on:
       - main
       - develop
     tags:
-      - 'v*'  # for Docker image publishing ; add "_k" to get Kubernetes deployment
+      - 'v*'  # for Docker image publishing ; add "_k8s" to get Kubernetes deployment
   pull_request:
     branches:
       - main
