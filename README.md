@@ -7,6 +7,13 @@ GaleMind ML Inference Server v0.1 - A high-performance machine learning inferenc
 - **Rust** (1.70+): Install from [rustup.rs](https://rustup.rs/)
 - **Make**: Required for using the Makefile commands
 
+# Github deployment notes
+- pushing on main or develop triggers 
+  - Docker imange building, 
+  - and (upon success) pushing to `galemindzen`'s _Docker hub_ private repo
+- tagging any commit with `v*` triggers its docker image building and (upon success) pushing to `galemindzen`'s _Docker hub_ private repo 
+- tagged any commit with `k8s_v*` triggers k8s deployment (upon successful last Docker image building and pushing) onto Galemind's Kubernetes cluster on Linode
+
 ## Installation
 
 1. Clone the repository:

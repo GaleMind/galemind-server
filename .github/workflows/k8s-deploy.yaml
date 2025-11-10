@@ -24,9 +24,7 @@ jobs:
       should_deploy: ${{ steps.check.outputs.should_deploy }}
       wf_run_id: ${{ steps.check.outputs.wf_run_id }}
       wf_branch: ${{ steps.check.outputs.wf_branch }}
-
     steps:
-
       - name: Minimal code checkout
         uses: actions/checkout@v5
         with:
@@ -47,6 +45,7 @@ jobs:
           else
             if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
               # upon workflow_run
+              echo "Reacting to workflow_run, with tags $TAGS"
               if [[ "${{ github.event.workflow_run.conclusion }}" != 'success' ]]; then
                 echo "A Docker image build seem to have just failed ... therefore a K8s deployment cannot be triggered." 
               else
@@ -58,6 +57,7 @@ jobs:
             else
               # upon simple tag push 
               # check if  last Docker build run was successfull for this commit
+              echo "Reacting by simple tag push... $TAGS"
               BUILD_RUN=$(gh api \
                 "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
                 --jq '[.workflow_runs[] | select(.name == "Build and Push Docker Image")] 
@@ -75,18 +75,18 @@ jobs:
           echo "wf_run_id=$wf_run_id" >> $GITHUB_OUTPUT
           echo "wf_branch=$wf_branch" >> $GITHUB_OUTPUT
 
+
   deploy:
     runs-on: ubuntu-latest
     needs: check-viability
-
     steps:
-
       - name: No viable deploy
         run: |
           if [[ ${{ needs.check-viability.outputs.should_deploy }} != 'true' ]] ; then 
             echo "Nothing to do!"
             exit 1
           fi            
+
 
       - name: Checkout code
         uses: actions/checkout@v5
@@ -141,6 +141,7 @@ jobs:
           echo "environment=$ENV" >> $GITHUB_OUTPUT
 
 
+
       - name: Docker Hub login
         uses: docker/login-action@v3
         with:
@@ -172,6 +173,7 @@ jobs:
             --atomic \
             --wait \
             --timeout 10m
+
 
 
       - name: Helm deployment check

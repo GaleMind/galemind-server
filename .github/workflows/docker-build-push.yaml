@@ -6,7 +6,8 @@ on:
       - main
       - develop
     tags:
-      - 'v*'  # version
+      - 'v*'  # just build and publish Docker image
+      - 'k8s_v*' # also deploy to Kubernetes cluster
   pull_request:
     branches:
       - main
@@ -16,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pushedimageid: ${{ steps.valuesharing.outputs.pushedimageid }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -48,6 +48,8 @@ jobs:
             type=raw,value=staging,enable=${{ github.ref == 'refs/heads/develop' }}
 
 
+
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         id: buildandpush
@@ -65,12 +67,15 @@ jobs:
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
 
+
+
       - name: Lay down my will
         id: valuesharing
         run: |
           # export artifact to external workflows
           echo "${{ steps.buildandpush.outputs.digest }}" > docker_image_digest.txt
           echo "pushedimageid=${{ steps.buildandpush.outputs.digest }}"  >> "$GITHUB_OUTPUT"
+
 
       - name: My will to posterity
         uses: actions/upload-artifact@v4
@@ -79,6 +84,8 @@ jobs:
           path: |
             docker_image_digest.txt
             
+
+
 
   security-scan:
     runs-on: ubuntu-latest
