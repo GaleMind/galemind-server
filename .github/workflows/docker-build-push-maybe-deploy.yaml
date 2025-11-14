@@ -28,7 +28,7 @@ jobs:
         run: |
           WF_ID=$(gh api \
             "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-            --jq '[.workflow_runs[] | select(.name == "Build and Push Docker Image")
+            --jq '[.workflow_runs[] | select(.name == "'${{ github.workflow }}'")
                    | select(.conclusion=="success")] 
                    | sort_by(.id) | .[-1].id // empty')
           echo "wf_run_id=$WF_ID" >> $GITHUB_OUTPUT
@@ -98,8 +98,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=dev,enable={{is_default_branch}}
-            type=raw,value=staging,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=dev,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=staging,enable='false'
 
       - name: Build and push Docker image
         if: steps.check-need-to-build-and-push.outputs.should_build_and_push == 'true'
@@ -136,6 +136,7 @@ jobs:
             docker_image_digest.txt
 
       - name: Kubectl configuration
+        if: ${{ endsWith(github.ref_name,'+k8s')}}
         uses: azure/k8s-set-context@v3
         with:
           method: kubeconfig
