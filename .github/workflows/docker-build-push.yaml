@@ -142,11 +142,13 @@ jobs:
           kubeconfig: ${{ secrets.KUBE_CONFIG }}
 
       - name: Helm setup
+        if: ${{ endsWith(github.ref_name,'+k8s')}}
         uses: azure/setup-helm@v3
         with:
           version: 'v3.12.3'
 
       - name: Variable assignment and Helm value customization
+        if: ${{ endsWith(github.ref_name,'+k8s')}}
         id: vars
         run: |
           # Previous successful branch name
@@ -176,6 +178,7 @@ jobs:
           echo "environment=$ENV" >> $GITHUB_OUTPUT
 
       - name: Helm deployment
+        if: ${{ endsWith(github.ref_name,'+k8s')}}
         run: |
           ENV=${{ steps.vars.outputs.environment }}
           # FROM artifact download
@@ -201,6 +204,7 @@ jobs:
             --timeout 10m
 
       - name: Helm deployment check
+        if: ${{ endsWith(github.ref_name,'+k8s')}}
         run: |
           kubectl rollout status deployment/galemind-server \
             -n galemind-${{ steps.vars.outputs.environment }} \
