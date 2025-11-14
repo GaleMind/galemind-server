@@ -8,6 +8,9 @@ on:
      - "Build and Push Docker Image"
     types:
       - completed
+    branches:
+      - main
+      - develop
 
   push:
     tags:
