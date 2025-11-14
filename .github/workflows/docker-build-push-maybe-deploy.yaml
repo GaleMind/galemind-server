@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and push Docker image and maybe deploy to Kubernetes
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
       - main
 
 jobs:
-  build:
+  build-push-deploy:
     runs-on: ubuntu-latest
     # avoid building if reacting to simple tag push
     outputs:
@@ -206,14 +206,13 @@ jobs:
       - name: Helm deployment check
         if: ${{ endsWith(github.ref_name,'+k8s')}}
         run: |
-          kubectl rollout status deployment/galemind-server \
-            -n galemind-${{ steps.vars.outputs.environment }} \
-            --timeout=5m
+          ENV=${{ steps.vars.outputs.environment }}
+          kubectl rollout status deployment galemind-server-$ENV -n galemind-$ENV --timeout=5m
 
   security-scan:
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name != 'pull_request'
+    needs: build-push-deploy
+    if: ${{ (github.event_name != 'pull_request') && (needs.build-push-deploy.outputs.pushedimageid != '' ) }}
     permissions:
       contents: read
       security-events: write
@@ -234,7 +233,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         env:
           # is IMGID requested in the environment by aquasecurity/trivy-action@master ?
-          IMGID: "${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}@${{ needs.build.outputs.pushedimageid }}"
+          IMGID: "${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}@${{ needs.build-push-deploy.outputs.pushedimageid }}"
         with:
           image-ref: ${{ env.IMGID }}
           format: 'sarif'
