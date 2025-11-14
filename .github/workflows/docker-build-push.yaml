@@ -103,6 +103,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         env:
+          # is IMGID requested in the environment by aquasecurity/trivy-action@master ?
           IMGID: "${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_IMAGE }}@${{ needs.build.outputs.pushedimageid }}"
         with:
           image-ref: ${{ env.IMGID }}
@@ -114,3 +115,4 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+

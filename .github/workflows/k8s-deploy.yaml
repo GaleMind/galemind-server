@@ -16,12 +16,12 @@ on:
 jobs:
   check-viability:
     # just to focus on rules that trigger Kubernetes deployment
-    runs-on: ubuntu-lates
+    runs-on: ubuntu-latest
     # run only if in a successful workflow_run from branches 'main' or 'develop'
     #   or in a suitable tag push
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' 
-             && (contains(github.event.workflow_run.head_branch, 'refs/heads/main')
-                  || contains(github.event.workflow_run.head_branch, 'refs/heads/develop') )) 
+             && (contains(github.event.workflow_run.head_branch, 'main')
+                  || contains(github.event.workflow_run.head_branch, 'develop') )) 
         || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/k8s_v'))
     outputs:
       should_deploy: ${{ steps.check.outputs.should_deploy }}
