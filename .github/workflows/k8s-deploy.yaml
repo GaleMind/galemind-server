@@ -22,7 +22,7 @@ jobs:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' 
              && (contains(github.event.workflow_run.head_branch, 'refs/heads/main')
                   || contains(github.event.workflow_run.head_branch, 'refs/heads/develop') )) 
-        || (github.event_name == 'push' && startsWith(github.head_branch, 'refs/tags/k8s_v'))
+        || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/k8s_v'))
     outputs:
       should_deploy: ${{ steps.check.outputs.should_deploy }}
       wf_run_id: ${{ steps.check.outputs.wf_run_id }}
