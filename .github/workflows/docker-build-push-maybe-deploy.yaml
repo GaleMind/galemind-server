@@ -28,7 +28,7 @@ jobs:
         run: |
           WF_ID=$(gh api \
             "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-            --jq '[.workflow_runs[] | select(.name == "'${{ github.workflow }}'")
+            --jq '[.workflow_runs[] | select(.name == "'"${{ github.workflow }}"'")
                    | select(.conclusion=="success")] 
                    | sort_by(.id) | .[-1].id // empty')
           echo "$WF_ID"
