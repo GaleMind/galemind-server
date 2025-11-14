@@ -100,7 +100,7 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=dev,enable=${{ github.ref_name == 'develop' }}
-            type=raw,value=staging,enable='false'
+            type=raw,value=staging,enable=false
 
       - name: Build and push Docker image
         if: steps.check-need-to-build-and-push.outputs.should_build_and_push == 'true'
