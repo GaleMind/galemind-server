@@ -31,6 +31,7 @@ jobs:
             --jq '[.workflow_runs[] | select(.name == "'${{ github.workflow }}'")
                    | select(.conclusion=="success")] 
                    | sort_by(.id) | .[-1].id // empty')
+          echo "$WF_ID"
           echo "wf_run_id=$WF_ID" >> $GITHUB_OUTPUT
 
       - name: Previous workflow data via artifact download
