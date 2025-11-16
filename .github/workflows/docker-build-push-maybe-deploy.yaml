@@ -63,7 +63,7 @@ jobs:
           IMAGE_DIGEST=$(cat docker_image_digest.txt 2>/dev/null || true)
           if [[ -n "$IMAGE_DIGEST" ]] ; then
             TOKEN=$(curl -s -u "${{ secrets.DOCKER_USERNAME }}:${{ secrets.DOCKER_PASSWORD }}"\
-                         "https://auth.docker.io/token?service=registry.docker.io&scope=repository${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}:pull" \
+                         "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}:pull" \
                     | jq -r '.token')
             EXISTING=$(curl -Is -w %{http_code} -o /dev/null -H "Authorization: Bearer $TOKEN" \
                             -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
