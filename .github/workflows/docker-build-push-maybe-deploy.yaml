@@ -85,10 +85,6 @@ jobs:
             fi
           fi
           echo "should_build_and_push=$SHOULD" >> $GITHUB_OUTPUT  
-          # TODO REMOVE (GHAction debugging purpose)
-          echo "img=${IMAGE_DIGEST}" >> $GITHUB_OUTPUT
-          echo "existing=${EXISTING}" >> $GITHUB_OUTPUT
-          echo "manifest=${MANIFEST}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         if: steps.check-need-to-build-and-push.outputs.should_build_and_push == 'true'
