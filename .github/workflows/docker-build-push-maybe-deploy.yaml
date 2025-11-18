@@ -57,6 +57,7 @@ jobs:
         #   1. a successful build has already pushed the Docker image
         #   2. and that image is still present in the Docker repo
         # then there is no need to build&push again
+        # TODO parametrize url and services (should more than one registry be used...)
         run: |
           SHOULD=true
           IMAGE_DIGEST=$(cat docker_image_digest.txt 2>/dev/null || true)
@@ -66,12 +67,24 @@ jobs:
                     | jq -r '.token')
             EXISTING=$(curl -Is -w %{http_code} -o /dev/null -H "Authorization: Bearer $TOKEN" \
                             -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                            "https://registry-1.docker.io/v2/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}/manifests/$IMAGE_DIGEST" )
+                            "https://registry-1.docker.io/v2/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}/manifests/${IMAGE_DIGEST}" )
             if [[ $EXISTING -eq 200 ]] ; then 
-              SHOULD=false          
+              SHOULD=false
+              if [[ ${{ github.ref }} =~ ^refs/tags/v ]] ; then
+                # simply add tag to existing Docker image
+                TOKEN=$(curl -s -u "${{ secrets.DOCKER_USERNAME }}:${{ secrets.DOCKER_PASSWORD }}"\
+                             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}:*" \
+                        | jq -r .token)
+                TAG="${{ github.ref_name }}"
+                MANIFEST=$(curl -s -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                                 "https://registry-1.docker.io/v2/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}/manifests/${IMAGE_DIGEST}")
+                curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/vnd.oci.image.index.v1+json" \
+                     --data-raw "$MANIFEST" "https://registry-1.docker.io/v2/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }}/manifests/${TAG//+/-}"\
+                  || true
+              fi
             fi
           fi
-          echo "should_build_and_push=$SHOULD" >> $GITHUB_OUTPUT        
+          echo "should_build_and_push=$SHOULD" >> $GITHUB_OUTPUT  
 
       - name: Set up Docker Buildx
         if: steps.check-need-to-build-and-push.outputs.should_build_and_push == 'true'
@@ -153,13 +166,6 @@ jobs:
         if: ${{ endsWith(github.ref_name,'+k8s')}}
         id: vars
         run: |
-          # Previous successful branch name
-          BRANCH_NAME="${{ github.ref_name }}"
-          
-          # FIXME
-          # Sanitize branch name to use it as a tag (replace "/" with "-")
-          IMAGE_TAG=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
-          
           # Choose appropriate "values.yaml"
           if [ "$BRANCH_NAME" == "main" ]; then
             VALUES_PATH="production"
@@ -169,7 +175,8 @@ jobs:
             ENV="dev"
           else
             VALUES_PATH="staging"
-            ENV="staging"
+            # TODO define policies for staging K8s deployments 
+            ENV="dev"
           fi
           
           VALUE_FILE=./infra/helm/environments/$VALUES_PATH/values.yaml
@@ -199,7 +206,6 @@ jobs:
             -f ${{ steps.vars.outputs.value_file }} \
             --set imagePullSecrets[0].name=${DOCKER_PREFIX}-secret \
             --set image.repository=${{ vars.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ vars.DOCKER_REPO }} \
-            --set image.tag=${{ steps.vars.outputs.image_tag }} \
             --set image.digest=$IMAGE_DIGEST \
             --atomic \
             --wait \
