@@ -4,6 +4,12 @@ all: format test
 test:
 	cargo test
 
+e2e-test:
+	./tests/run_e2e_tests.sh
+
+test-unit:
+	cargo test --workspace --exclude e2e-tests
+
 #coverage:
 #	cargo tarpaulin --config tarpaulin.toml --fail-under 80
 
