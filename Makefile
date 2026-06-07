@@ -11,6 +11,9 @@ format:
 	cargo fmt
 
 run:
+	@if [ -f .env ]; then \
+		set -a && . ./.env && set +a; \
+	fi && \
 	cargo run -p galemind start
 docker-build:
 	$(eval TIMESTAMP := $(shell date +%Y%m%d%H%M))

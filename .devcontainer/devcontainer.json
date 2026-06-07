@@ -1,6 +1,8 @@
 {
   "name": "GaleMind Server Dev Environment",
-  "image": "mcr.microsoft.com/devcontainers/rust:1-1-bookworm",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
   "features": {
     "ghcr.io/devcontainers/features/python:1": {
       "version": "3.12"
@@ -21,7 +23,8 @@
         "ms-python.pylint",
         "ms-python.black-formatter",
         "vadimcn.vscode-lldb",
-        "serayuzgur.crates"
+        "serayuzgur.crates",
+        "zxh404.vscode-proto3"
       ],
       "settings": {
         "rust-analyzer.cargo.allFeatures": true,
@@ -40,10 +43,6 @@
       "onAutoForward": "notify"
     }
   },
-  "postCreateCommand": "cargo build",
   "remoteUser": "vscode",
-  "workspaceFolder": "/workspaces/galemind-server",
-  "mounts": [
-    "source=${localWorkspaceFolder}/models,target=/workspaces/galemind-server/models,type=bind,consistency=cached"
-  ]
+  "workspaceFolder": "/workspaces/galemind-server"
 }

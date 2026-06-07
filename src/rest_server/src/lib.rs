@@ -2,14 +2,18 @@ mod data_model;
 mod healthcheck;
 mod metadata_model;
 mod model;
+mod openai_models;
+mod protocol;
 mod server;
+mod unified_endpoints;
 
 use crate::healthcheck::new_health_check_router;
 use crate::model::new_model_router;
 use crate::server::new_server_router;
+use crate::unified_endpoints::new_unified_router;
 use anyhow::Result;
 use async_trait::async_trait;
-use axum::{Router, serve};
+use axum::{serve, Router};
 use foundation::{InferenceServerBuilder, InferenceServerConfig, ModelDiscoveryService};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -35,6 +39,7 @@ impl InferenceServerBuilder for RestServerBuilder {
             .nest("/{version}", new_server_router())
             .nest("/{version}/health", new_health_check_router())
             .nest("/{version}/models", new_model_router(model_manager.clone()))
+            .nest("/v1", new_unified_router(model_manager.clone()))
             .layer(TraceLayer::new_for_http());
 
         Self { addr, app }

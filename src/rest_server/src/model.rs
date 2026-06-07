@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
-    Router,
     extract::{Json, Path},
     response::IntoResponse,
     routing::{get, post},
+    Router,
 };
 use foundation::ModelDiscoveryService;
 
