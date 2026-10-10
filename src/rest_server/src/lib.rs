@@ -1,23 +1,17 @@
 //! The Predict Protocol v2 HTTP/REST transport.
 //!
-//! The protocol's URLs and JSON objects, and nothing else: no chat endpoints,
-//! no protocol-selection header, no vendor extensions. Handlers decode a body,
-//! call [`galemind_core::Inference`] and encode the answer.
+//! The protocol's URLs and nothing else: no chat endpoints, no
+//! protocol-selection header, no vendor extensions. Handlers decode a body
+//! with [`galemind_core::json`], call [`galemind_core::Inference`] and encode
+//! the answer.
 
 #![forbid(unsafe_code)]
 
 mod error;
 mod routes;
-mod tensor_json;
-mod wire;
 
 pub use error::status_for;
 pub use routes::router as predict_v2_router;
-pub use tensor_json::{BytesEncoding, BINARY_ENCODING_PARAMETER};
-pub use wire::{
-    ErrorBody, InferenceRequestBody, InferenceResponseBody, MetadataTensor, ModelMetadataBody,
-    RequestInput, RequestOutput, ResponseOutput, ServerMetadata,
-};
 
 use axum::Router;
 use galemind_core::Inference;

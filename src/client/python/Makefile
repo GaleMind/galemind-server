@@ -1,31 +1,30 @@
-# Makefile for Python gRPC stub generation
+# Generate the Predict Protocol v2 gRPC stubs for the Python client.
 
-# You can override these on the command line:
-# make PROTO_DIR=path/to/protos OUT_DIR=path/to/output
-PROTO_DIR ?= ../grpc_server/proto/prediction
+PROTO_DIR ?= ../../grpc_server/proto
 OUT_DIR   ?= ./galemind
+PROTO     ?= grpc_predict_v2.proto
 
-# Proto file name (without path)
-PROTO_FILE = prediction.proto
-
-.PHONY: all generate clean
+.PHONY: all generate test clean
 
 all: generate
 
-## Generate Python gRPC code from .proto
+## Generate the gRPC stubs from the service definition
 generate:
-	@echo "Generating Python gRPC stubs from $$PROTO_DIR/$$PROTO_FILE → $$OUT_DIR"
-	mkdir -p $(OUT_DIR)
 	python -m grpc_tools.protoc \
 		--proto_path=$(PROTO_DIR) \
 		--python_out=$(OUT_DIR) \
 		--grpc_python_out=$(OUT_DIR) \
-		$(PROTO_DIR)/$(PROTO_FILE)
-	touch $(OUT_DIR)/__init__.py
+		$(PROTO_DIR)/$(PROTO)
+	@# The generated gRPC module imports its sibling as a top-level module,
+	@# which breaks inside a package; make it a relative import.
+	sed -i'' -e 's/^import grpc_predict_v2_pb2 as/from . import grpc_predict_v2_pb2 as/' \
+		$(OUT_DIR)/grpc_predict_v2_pb2_grpc.py
 
-## Remove generated files
+## Run the client tests
+test:
+	python -m pytest -q
+
+## Remove the generated stubs
 clean:
-	@echo "Cleaning generated files in $(OUT_DIR)"
-	rm -rf $(OUT_DIR)/*
-
-
+	rm -f $(OUT_DIR)/grpc_predict_v2_pb2.py $(OUT_DIR)/grpc_predict_v2_pb2_grpc.py
+	rm -rf $(OUT_DIR)/__pycache__ .pytest_cache

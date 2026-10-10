@@ -1,9 +1,21 @@
-//! The JSON objects defined by the Predict Protocol v2.
+//! The JSON encoding defined by the Predict Protocol v2.
 //!
 //! Field names are exactly those in the specification, which is why none of
 //! these types rename anything: `model_name` is `model_name` on the wire.
+//!
+//! This lives beside the domain rather than inside the HTTP server because the
+//! encoding is part of the protocol, not of one side of it: the server and the
+//! client both speak it, and sharing it means a change can only be made in one
+//! place.
 
-use galemind_core::{InferResponse, ModelMetadata, Parameter, Parameters, Tensor};
+pub mod tensor;
+
+pub use tensor::{decode, encode, BytesEncoding, BINARY_ENCODING_PARAMETER};
+
+use crate::error::InferError;
+use crate::infer::{InferResponse, Parameter, Parameters};
+use crate::model::{ModelMetadata, TensorMetadata};
+use crate::tensor::Tensor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -12,15 +24,15 @@ use std::collections::BTreeMap;
 pub type JsonParameters = BTreeMap<String, Value>;
 
 /// `$metadata_server_response`
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ServerMetadata {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerMetadataBody {
     pub name: String,
     pub version: String,
     pub extensions: Vec<String>,
 }
 
 /// `$metadata_tensor`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetadataTensor {
     pub name: String,
     pub datatype: String,
@@ -28,7 +40,7 @@ pub struct MetadataTensor {
 }
 
 /// `$metadata_model_response`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMetadataBody {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,7 +52,7 @@ pub struct ModelMetadataBody {
 
 impl From<ModelMetadata> for ModelMetadataBody {
     fn from(metadata: ModelMetadata) -> Self {
-        fn tensors(tensors: Vec<galemind_core::TensorMetadata>) -> Vec<MetadataTensor> {
+        fn tensors(tensors: Vec<TensorMetadata>) -> Vec<MetadataTensor> {
             tensors
                 .into_iter()
                 .map(|tensor| MetadataTensor {
@@ -62,7 +74,7 @@ impl From<ModelMetadata> for ModelMetadataBody {
 }
 
 /// `$request_input`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestInput {
     pub name: String,
     pub shape: Vec<i64>,
@@ -73,7 +85,7 @@ pub struct RequestInput {
 }
 
 /// `$request_output`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestOutput {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,7 +93,7 @@ pub struct RequestOutput {
 }
 
 /// `$inference_request`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceRequestBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -93,7 +105,7 @@ pub struct InferenceRequestBody {
 }
 
 /// `$response_output`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseOutput {
     pub name: String,
     pub shape: Vec<i64>,
@@ -104,7 +116,7 @@ pub struct ResponseOutput {
 }
 
 /// `$inference_response`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceResponseBody {
     pub model_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,7 +129,7 @@ pub struct InferenceResponseBody {
 }
 
 /// `$inference_error_response` and the other error objects, which share a shape.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
 }
@@ -143,29 +155,27 @@ pub fn parameters_to_json(parameters: &Parameters) -> Option<JsonParameters> {
 }
 
 /// Builds the response body, encoding each output's contents for its datatype.
-pub fn response_to_json(
-    response: InferResponse,
-) -> Result<InferenceResponseBody, galemind_core::InferError> {
+pub fn response_to_json(response: InferResponse) -> Result<InferenceResponseBody, InferError> {
     let outputs = response
         .outputs
         .into_iter()
         .map(|tensor| {
             let datatype = tensor.data.datatype().to_string();
             let Tensor { name, shape, data } = tensor;
-            let (data, encoding) = crate::tensor_json::encode(&data);
+            let (data, encoding) = tensor::encode(&data);
 
             // Only say how bytes were encoded when it is not plain text, so
             // ordinary responses carry no server-specific parameters at all.
             let parameters = match encoding {
-                crate::tensor_json::BytesEncoding::Base64 => Some(
+                tensor::BytesEncoding::Base64 => Some(
                     [(
-                        crate::tensor_json::BINARY_ENCODING_PARAMETER.to_string(),
+                        tensor::BINARY_ENCODING_PARAMETER.to_string(),
                         Value::String("base64".to_string()),
                     )]
                     .into_iter()
                     .collect(),
                 ),
-                crate::tensor_json::BytesEncoding::Text => None,
+                tensor::BytesEncoding::Text => None,
             };
 
             Ok(ResponseOutput {
@@ -176,7 +186,7 @@ pub fn response_to_json(
                 data,
             })
         })
-        .collect::<Result<Vec<_>, galemind_core::InferError>>()?;
+        .collect::<Result<Vec<_>, InferError>>()?;
 
     Ok(InferenceResponseBody {
         model_name: response.model_name,

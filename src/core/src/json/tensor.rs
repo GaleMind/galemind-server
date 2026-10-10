@@ -7,9 +7,11 @@
 //! is an `INT32` tensor or an `FP32` tensor depending on what the request says
 //! it is.
 
+use crate::datatype::DataType;
+use crate::error::InferError;
+use crate::tensor::TensorData;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use galemind_core::{DataType, InferError, TensorData};
 use half::{bf16, f16};
 use serde_json::{json, Number, Value};
 
@@ -96,7 +98,7 @@ pub enum BytesEncoding {
 
 impl BytesEncoding {
     /// Reads the encoding a request declared, defaulting to text.
-    pub fn from_parameters(parameters: Option<&crate::wire::JsonParameters>) -> Result<Self> {
+    pub fn from_parameters(parameters: Option<&super::JsonParameters>) -> Result<Self> {
         match parameters.and_then(|p| p.get(BINARY_ENCODING_PARAMETER)) {
             None => Ok(Self::Text),
             Some(Value::String(name)) if name == "base64" => Ok(Self::Base64),
@@ -429,7 +431,7 @@ mod tests {
 
     #[test]
     fn the_encoding_parameter_is_read_from_a_requests_parameters() {
-        use crate::wire::JsonParameters;
+        use crate::json::JsonParameters;
 
         assert_eq!(
             BytesEncoding::from_parameters(None).unwrap(),

@@ -77,6 +77,27 @@ impl fmt::Display for ModelKey {
     }
 }
 
+/// What the server metadata endpoints report about the server itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerMetadata {
+    pub name: String,
+    pub version: String,
+    /// Protocol extensions the server implements. The specification defines
+    /// none, and this server implements none.
+    pub extensions: Vec<String>,
+}
+
+impl ServerMetadata {
+    /// This server's own metadata.
+    pub fn current() -> Self {
+        Self {
+            name: crate::SERVER_NAME.to_string(),
+            version: crate::SERVER_VERSION.to_string(),
+            extensions: Vec::new(),
+        }
+    }
+}
+
 /// Shape and type of one model input or output.
 ///
 /// A variable-size dimension is `-1`, as the protocol specifies.

@@ -4,3 +4,8 @@
 __pycache__/
 *.pyc
 /.cargo/
+
+# Generated gRPC stubs for the Python client (`make generate`)
+/src/client/python/galemind/grpc_predict_v2_pb2.py
+/src/client/python/galemind/grpc_predict_v2_pb2_grpc.py
+.pytest_cache/

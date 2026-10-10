@@ -5,7 +5,6 @@ use galemind_core::{
     DataType, InferError, InferRequest, InferResponse, ModelMetadata, ModelRef, Parameter,
     Parameters, RequestedOutput, Tensor, TensorData,
 };
-use half::{bf16, f16};
 use std::collections::HashMap;
 use std::str::FromStr;
 use tonic::{Code, Status};
@@ -27,6 +26,15 @@ pub fn to_status(error: InferError) -> Status {
         InferError::Overloaded => Code::ResourceExhausted,
         InferError::Timeout(_) => Code::DeadlineExceeded,
         InferError::Backend(_) | InferError::Store(_) | InferError::Internal(_) => Code::Internal,
+        // A failure relayed from somewhere else, for example by a backend that
+        // is itself a client of another server.
+        InferError::Remote { client_error, .. } => {
+            if *client_error {
+                Code::InvalidArgument
+            } else {
+                Code::Internal
+            }
+        }
     };
     Status::new(code, message)
 }
@@ -251,24 +259,244 @@ pub fn metadata_to_proto(metadata: ModelMetadata) -> pb::ModelMetadataResponse {
     }
 }
 
-/// Helper for building raw tensor contents, used by the client and tests.
-pub fn raw_contents(data: &TensorData) -> Vec<u8> {
-    data.to_raw()
+/// Builds a `ModelInferRequest` from a domain request, for the client side.
+///
+/// Contents go in `raw_input_contents`, which the protocol notes is the
+/// higher-performance representation and is the only one able to carry FP16 and
+/// BF16 exactly.
+pub fn request_to_proto(request: &InferRequest) -> pb::ModelInferRequest {
+    let mut inputs = Vec::with_capacity(request.inputs.len());
+    let mut raw_input_contents = Vec::with_capacity(request.inputs.len());
+
+    for tensor in &request.inputs {
+        raw_input_contents.push(tensor.data.to_raw());
+        inputs.push(pb::model_infer_request::InferInputTensor {
+            name: tensor.name.clone(),
+            datatype: tensor.data.datatype().to_string(),
+            shape: tensor.shape.clone(),
+            parameters: HashMap::new(),
+            contents: None,
+        });
+    }
+
+    pb::ModelInferRequest {
+        model_name: request.model.name.clone(),
+        model_version: request.model.version.clone().unwrap_or_default(),
+        id: request.id.clone().unwrap_or_default(),
+        parameters: parameters_to_proto(&request.parameters),
+        inputs,
+        outputs: request
+            .requested_outputs
+            .iter()
+            .map(
+                |output| pb::model_infer_request::InferRequestedOutputTensor {
+                    name: output.name.clone(),
+                    parameters: parameters_to_proto(&output.parameters),
+                },
+            )
+            .collect(),
+        raw_input_contents,
+    }
 }
 
-/// Reads a 16-bit float from raw bytes, for callers that need one directly.
-pub fn f16_from_bits(bits: u16) -> f16 {
-    f16::from_bits(bits)
+/// Reads a `ModelInferResponse` into domain types, for the client side.
+pub fn response_from_proto(response: pb::ModelInferResponse) -> Result<InferResponse> {
+    let raw = &response.raw_output_contents;
+    if !raw.is_empty() && raw.len() != response.outputs.len() {
+        return Err(InferError::Internal(format!(
+            "the server sent {} raw output contents for {} outputs",
+            raw.len(),
+            response.outputs.len()
+        )));
+    }
+
+    let mut outputs = Vec::with_capacity(response.outputs.len());
+    for (index, output) in response.outputs.iter().enumerate() {
+        let datatype = DataType::from_str(&output.datatype)?;
+        let count = element_count(&output.name, &output.shape)?;
+
+        let data = match (raw.get(index), &output.contents) {
+            (Some(bytes), _) => TensorData::from_raw(datatype, bytes, count)?,
+            (None, Some(contents)) => data_from_contents(&output.name, datatype, contents)?,
+            (None, None) => {
+                return Err(InferError::Internal(format!(
+                    "output '{}' carries no contents",
+                    output.name
+                )))
+            }
+        };
+
+        let tensor = Tensor::new(&output.name, output.shape.clone(), data);
+        tensor.validate()?;
+        outputs.push(tensor);
+    }
+
+    Ok(InferResponse {
+        model_name: response.model_name,
+        model_version: response.model_version,
+        id: (!response.id.is_empty()).then_some(response.id),
+        parameters: parameters_from_proto(response.parameters),
+        outputs,
+    })
 }
 
-/// Reads a bfloat16 from raw bytes, for callers that need one directly.
-pub fn bf16_from_bits(bits: u16) -> bf16 {
-    bf16::from_bits(bits)
+/// Reads a `ModelMetadataResponse` into domain types, for the client side.
+pub fn metadata_from_proto(response: pb::ModelMetadataResponse) -> Result<ModelMetadata> {
+    let tensors = |tensors: Vec<pb::model_metadata_response::TensorMetadata>| {
+        tensors
+            .into_iter()
+            .map(|tensor| {
+                Ok(galemind_core::TensorMetadata {
+                    name: tensor.name,
+                    datatype: DataType::from_str(&tensor.datatype)?,
+                    shape: tensor.shape,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    };
+
+    Ok(ModelMetadata {
+        name: response.name,
+        versions: response.versions,
+        platform: response.platform,
+        inputs: tensors(response.inputs)?,
+        outputs: tensors(response.outputs)?,
+        // The protocol's metadata carries no batch limit: the server decides
+        // it, so a client must not assume one.
+        max_batch_size: None,
+    })
+}
+
+/// Maps a gRPC status back onto a domain error, for the client side.
+///
+/// The server's own wording is kept: it knows what went wrong, and restating it
+/// in the client's words would only nest one sentence inside another.
+pub fn from_status(status: Status) -> InferError {
+    let message = status.message().to_string();
+    match status.code() {
+        Code::ResourceExhausted => InferError::Overloaded,
+        Code::DeadlineExceeded => InferError::Timeout(std::time::Duration::from_secs(0)),
+        Code::NotFound | Code::InvalidArgument | Code::Unimplemented | Code::FailedPrecondition => {
+            InferError::remote_client_error(message)
+        }
+        _ => InferError::remote_server_error(message),
+    }
+}
+
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+    use galemind_core::{ModelRef, Parameters, RequestedOutput};
+
+    fn request() -> InferRequest {
+        InferRequest {
+            model: ModelRef::new("energy", Some("2".to_string())),
+            id: Some("req-1".to_string()),
+            parameters: Parameters::new(),
+            inputs: vec![Tensor::new(
+                "features",
+                vec![1, 2],
+                TensorData::Fp32(vec![1.5, 2.5]),
+            )],
+            requested_outputs: vec![RequestedOutput {
+                name: "kwh".to_string(),
+                parameters: Parameters::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_request_encoded_by_the_client_is_decoded_by_the_server_unchanged() {
+        let original = request();
+        let decoded = request_from_proto(request_to_proto(&original)).unwrap();
+
+        assert_eq!(decoded.model, original.model);
+        assert_eq!(decoded.id, original.id);
+        assert_eq!(decoded.inputs, original.inputs);
+        assert_eq!(decoded.requested_outputs, original.requested_outputs);
+    }
+
+    #[test]
+    fn a_response_encoded_by_the_server_is_decoded_by_the_client_unchanged() {
+        let original = InferResponse {
+            model_name: "energy".to_string(),
+            model_version: "2".to_string(),
+            id: Some("req-1".to_string()),
+            parameters: Parameters::new(),
+            outputs: vec![
+                Tensor::new("kwh", vec![2, 1], TensorData::Fp32(vec![1.0, 2.0])),
+                Tensor::new("band", vec![2], TensorData::Int64(vec![0, 2])),
+            ],
+        };
+
+        let decoded = response_from_proto(response_to_proto(original.clone())).unwrap();
+        assert_eq!(decoded.model_name, original.model_name);
+        assert_eq!(decoded.model_version, original.model_version);
+        assert_eq!(decoded.id, original.id);
+        assert_eq!(decoded.outputs, original.outputs);
+    }
+
+    #[test]
+    fn metadata_survives_a_round_trip_through_the_protocol() {
+        let original = ModelMetadata {
+            name: "energy".to_string(),
+            versions: vec!["1".to_string(), "2".to_string()],
+            platform: "onnx_onnxv1".to_string(),
+            inputs: vec![galemind_core::TensorMetadata {
+                name: "features".to_string(),
+                datatype: DataType::Fp32,
+                shape: vec![-1, 8],
+            }],
+            outputs: vec![galemind_core::TensorMetadata {
+                name: "kwh".to_string(),
+                datatype: DataType::Fp32,
+                shape: vec![-1, 1],
+            }],
+            max_batch_size: None,
+        };
+
+        let decoded = metadata_from_proto(metadata_to_proto(original.clone())).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn a_status_carries_the_servers_wording_and_blame_back_to_the_client() {
+        for error in [
+            InferError::ModelNotFound("energy".into()),
+            InferError::InvalidRequest("input 'features' has rank 1".into()),
+            InferError::Unsupported("nope".into()),
+        ] {
+            let seen = from_status(to_status(error.clone()));
+            assert_eq!(seen.to_string(), error.to_string(), "wording changed");
+            assert!(seen.is_client_error(), "{seen}");
+        }
+
+        for error in [
+            InferError::Backend("boom".into()),
+            InferError::Store("x".into()),
+        ] {
+            let seen = from_status(to_status(error.clone()));
+            assert!(!seen.is_client_error(), "{seen}");
+        }
+    }
+
+    #[test]
+    fn overload_and_timeout_keep_their_meaning_across_the_wire() {
+        assert!(matches!(
+            from_status(to_status(InferError::Overloaded)),
+            InferError::Overloaded
+        ));
+        assert!(from_status(to_status(InferError::Timeout(
+            std::time::Duration::from_secs(5)
+        )))
+        .is_retryable());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use half::f16;
 
     fn input(
         name: &str,

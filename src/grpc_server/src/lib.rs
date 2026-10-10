@@ -7,7 +7,7 @@
 
 #![forbid(unsafe_code)]
 
-mod convert;
+pub mod convert;
 
 use convert::{metadata_to_proto, request_from_proto, response_to_proto, to_status};
 use galemind_core::{Inference, ModelRef, SERVER_NAME, SERVER_VERSION};

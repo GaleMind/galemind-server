@@ -1,16 +1,15 @@
 //! The eight URLs the Predict Protocol v2 defines over HTTP.
 
 use crate::error::ApiError;
-use crate::tensor_json;
-use crate::wire::{
-    ErrorBody, InferenceRequestBody, InferenceResponseBody, JsonParameters, ModelMetadataBody,
-    ServerMetadata,
-};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use galemind_core::json::{
+    self, tensor as tensor_json, ErrorBody, InferenceRequestBody, InferenceResponseBody,
+    JsonParameters, ModelMetadataBody, ServerMetadataBody,
+};
 use galemind_core::{
     DataType, InferError, InferRequest, Inference, ModelRef, Parameter, Parameters,
     RequestedOutput, Tensor, SERVER_NAME, SERVER_VERSION,
@@ -92,8 +91,8 @@ async fn model_version_ready(
     )
 }
 
-async fn server_metadata() -> Json<ServerMetadata> {
-    Json(ServerMetadata {
+async fn server_metadata() -> Json<ServerMetadataBody> {
+    Json(ServerMetadataBody {
         name: SERVER_NAME.to_string(),
         version: SERVER_VERSION.to_string(),
         // No protocol extensions are implemented.
@@ -160,7 +159,7 @@ async fn infer(
     debug!(%model, inputs = body.inputs.len(), "REST inference request");
     let request = to_domain(model, body)?;
     let response = inference.infer(request).await?;
-    Ok(Json(crate::wire::response_to_json(response)?))
+    Ok(Json(json::response_to_json(response)?))
 }
 
 /// Builds a domain request from the JSON body.

@@ -1,8 +1,8 @@
 //! Turning domain errors into the protocol's HTTP responses.
 
-use crate::wire::ErrorBody;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use galemind_core::json::ErrorBody;
 use galemind_core::InferError;
 
 /// A domain error rendered as the protocol's error object.
@@ -32,6 +32,15 @@ pub fn status_for(error: &InferError) -> StatusCode {
         InferError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
         InferError::Backend(_) | InferError::Store(_) | InferError::Internal(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
+        }
+        // A failure relayed from somewhere else, for example by a backend that
+        // is itself a client of another server.
+        InferError::Remote { client_error, .. } => {
+            if *client_error {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            }
         }
     }
 }
