@@ -26,6 +26,7 @@ gmctl infer building_energy --rows 4
 
 - [Prerequisites](#prerequisites)
 - [Building](#building)
+- [Coverage](#coverage)
 - [The model repository](#the-model-repository)
 - [Running the server](#running-the-server)
 - [The API](#the-api)
@@ -101,6 +102,8 @@ unaffected: `.dockerignore` drops `.cargo/`, so they compile from source.
 |---|---|
 | `make all` | Format, test, build |
 | `make test` | `cargo test` |
+| `make coverage` | Line coverage, with a floor of 75% |
+| `make coverage-open` | The same report, opened in a browser |
 | `make format` | `cargo fmt` |
 | `make run` | Start the server, loading `.env` first |
 | `make models` | Regenerate the model repository |
@@ -129,6 +132,55 @@ librocksdb-sys build script's, recompiling RocksDB on every alternation
 between the two. The cost of the split is a separate `src/e2e/target`, and
 dependency versions that have to be kept in step with the root
 `[workspace.dependencies]` by hand.
+
+## Coverage
+
+```bash
+make coverage
+```
+
+That measures the workspace, writes a browsable tree to
+`reports/coverage/html/index.html` and an lcov trace beside it at
+`reports/coverage/lcov.info`, prints the per-file table, and exits non-zero if
+line coverage has fallen below `COVERAGE_MIN`, which is 75. The floor is a
+variable, so a branch that is deliberately mid-refactor can run
+`make coverage COVERAGE_MIN=0` rather than editing the Makefile. The
+report lands under `reports/`, which is ignored by git -- coverage is a result,
+not source. `make coverage-open` runs the same measurement without the floor
+and opens it, which is the one to use when the question is *which* lines are
+missed rather than what the number is.
+
+The first run installs what it needs: `cargo-llvm-cov`, and the toolchain's
+`llvm-tools` component, which it uses to read the raw profiles.
+
+Measurement is source-based -- the compiler instruments the code and the test
+binaries write profiles as they run. The alternative, single-stepping the tests
+under ptrace, mis-attributes exactly the code this server is made of: the store
+links a static RocksDB, and the ONNX runtime spawns threads of its own.
+
+Nothing is excluded by hand. The integration harnesses under `tests/`, the
+generated protobuf stubs the build scripts write into `target/`, and the
+dependencies are all left out of the report already, and the end-to-end suite
+is its own workspace, so `--workspace` never reaches it.
+
+Two numbers are worth knowing before reading the table. `galemind/src/main.rs`
+and `grpc_server/src/lib.rs` both sit at 0%: they are the process entry point
+and the server's `serve` loop, which only the end-to-end suite exercises, and
+that suite runs outside this measurement against a binary in a container, where
+no profile is collected. Coverage here is therefore the unit and integration
+view, and the end-to-end suite is what covers the wiring it cannot see.
+
+The Python client is measured separately, from its own directory:
+
+```bash
+cd src/client/python && make coverage
+```
+
+It needs the `dev` extra (`pytest`, `pytest-cov`) and, because the gRPC half of
+the client is only importable once the stubs exist, it runs `make generate`
+first. Its report goes to `reports/coverage-python/`, and its floor, 80%, is in
+`pyproject.toml` under `[tool.coverage.report]`. The generated stubs are
+omitted there, being protoc output rather than this package's code.
 
 ## The model repository
 

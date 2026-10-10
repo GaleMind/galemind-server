@@ -26,3 +26,16 @@ packages = ["galemind"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["galemind"]
+# The Predict Protocol v2 stubs are protoc output, written by `make generate`
+# and not committed. They are not this package's code to test.
+omit = [
+    "galemind/grpc_predict_v2_pb2.py",
+    "galemind/grpc_predict_v2_pb2_grpc.py",
+]
+
+[tool.coverage.report]
+# Matches the Rust workspace's gate in the root Makefile.
+fail_under = 80

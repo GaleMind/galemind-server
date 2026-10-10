@@ -11,3 +11,6 @@ __pycache__/
 /src/client/python/galemind/grpc_predict_v2_pb2.py
 /src/client/python/galemind/grpc_predict_v2_pb2_grpc.py
 .pytest_cache/
+
+# coverage.py's data file, from `make coverage` in src/client/python
+.coverage

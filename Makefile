@@ -23,13 +23,13 @@ test:
 COVERAGE_MIN ?= 75
 COVERAGE_DIR ?= reports/coverage
 
-# What is not under test: the generated protobuf stubs, which the build scripts
-# write under target/, and the integration harnesses under tests/, which are
-# the test, not the subject. Neither belongs in the denominator. The end-to-end
-# suite needs no exclusion -- it is its own workspace, so --workspace never
-# reaches it.
-COVERAGE_IGNORE ?= '(^|/)target/|(^|/)tests/|(^|/)build\.rs$$'
-
+# Nothing is excluded by hand. cargo-llvm-cov already keeps the integration
+# harnesses under tests/, the generated protobuf stubs the build scripts write
+# into target/, and every dependency out of the report, and the end-to-end
+# suite is its own workspace, so --workspace never reaches it. An
+# --ignore-filename-regex covering those was measured against this tree and
+# moved the total by nothing, so it is not carried here as decoration.
+#
 # Three passes over one set of profiles: measure once with --no-report, then
 # render each format from the result. A single `cargo llvm-cov` invocation
 # emits one format only, and re-running it per format would re-run the tests.
@@ -37,21 +37,17 @@ coverage: coverage-tools
 	cargo llvm-cov clean --workspace
 	cargo llvm-cov --workspace --no-report
 	@mkdir -p $(COVERAGE_DIR)
-	cargo llvm-cov report --ignore-filename-regex $(COVERAGE_IGNORE) \
-		--html --output-dir $(COVERAGE_DIR)
-	cargo llvm-cov report --ignore-filename-regex $(COVERAGE_IGNORE) \
-		--lcov --output-path $(COVERAGE_DIR)/lcov.info
+	cargo llvm-cov report --html --output-dir $(COVERAGE_DIR)
+	cargo llvm-cov report --lcov --output-path $(COVERAGE_DIR)/lcov.info
 	@echo
-	cargo llvm-cov report --ignore-filename-regex $(COVERAGE_IGNORE) \
-		--fail-under-lines $(COVERAGE_MIN)
+	cargo llvm-cov report --fail-under-lines $(COVERAGE_MIN)
 	@echo "HTML report: $(COVERAGE_DIR)/html/index.html"
 
 # The same measurement, opened in a browser and without the gate, for reading
 # which lines are missed rather than checking a number.
 coverage-open: coverage-tools
 	cargo llvm-cov clean --workspace
-	cargo llvm-cov --workspace --ignore-filename-regex $(COVERAGE_IGNORE) \
-		--open --output-dir $(COVERAGE_DIR)
+	cargo llvm-cov --workspace --open --output-dir $(COVERAGE_DIR)
 
 # cargo-llvm-cov reads the raw profiles with the toolchain's own llvm-tools, so
 # the component is as much a dependency as the subcommand itself.
