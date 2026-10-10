@@ -1,8 +1,8 @@
 //! The service end to end: real ONNX models, real cache, real batching.
 
 use galemind_core::{
-    BackendRegistry, DataType, Inference, InferError, InferRequest, ModelKey, ModelRef,
-    Parameters, Tensor, TensorData, PLATFORM_ONNX,
+    BackendRegistry, DataType, InferError, InferRequest, Inference, ModelKey, ModelRef, Parameters,
+    Tensor, TensorData, PLATFORM_ONNX,
 };
 use galemind_onnx::OnnxBackendFactory;
 use galemind_service::ServiceBuilder;
@@ -95,7 +95,10 @@ async fn an_inference_names_the_version_it_served_and_echoes_the_request_id() {
     let TensorData::Fp32(kwh) = &response.outputs[0].data else {
         panic!("expected FP32 output");
     };
-    assert!(kwh[0] > kwh[1], "the office should use more energy: {kwh:?}");
+    assert!(
+        kwh[0] > kwh[1],
+        "the office should use more energy: {kwh:?}"
+    );
 }
 
 #[tokio::test]

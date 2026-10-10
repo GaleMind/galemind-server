@@ -90,7 +90,10 @@ fn the_regressor_predicts_more_energy_for_the_larger_colder_building() {
     let TensorData::Fp32(kwh) = &output.data else {
         panic!("expected FP32 output, got {}", output.datatype());
     };
-    assert!(kwh[0] > kwh[1], "large cold office should use more: {kwh:?}");
+    assert!(
+        kwh[0] > kwh[1],
+        "large cold office should use more: {kwh:?}"
+    );
     assert!(kwh.iter().all(|v| *v > 0.0), "{kwh:?}");
 }
 
@@ -130,9 +133,7 @@ fn a_batch_of_rows_gives_the_same_answer_as_running_each_row_alone() {
     };
 
     for (index, row) in ROWS.iter().enumerate() {
-        let single = backend
-            .infer(&request("building_energy", &[*row]))
-            .unwrap();
+        let single = backend.infer(&request("building_energy", &[*row])).unwrap();
         let TensorData::Fp32(single) = &single.outputs[0].data else {
             panic!("expected FP32 output");
         };

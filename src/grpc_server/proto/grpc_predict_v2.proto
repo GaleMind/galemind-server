@@ -1,40 +1,41 @@
-// Copyright 2020 kubeflow.org.
+// The Predict Protocol version 2 gRPC service, as endorsed by NVIDIA Triton
+// Inference Server, TensorFlow Serving and ONNX Runtime Server.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// This file is the protocol and nothing more: no vendor extensions, no
+// streaming, no chat or token concepts. A server that implements these six
+// calls is interchangeable with any other compliant server.
 
 syntax = "proto3";
-package grpc_server;
 
-service PredictionService
+package inference;
+
+// Inference Server GRPC endpoints.
+service GRPCInferenceService
 {
+  // Check liveness of the inference server.
   rpc ServerLive(ServerLiveRequest) returns (ServerLiveResponse) {}
-  rpc ServerReady(ServerReadyRequest) returns (ServerReadyResponse) {}
-  rpc ModelReady(ModelReadyRequest) returns (ModelReadyResponse) {}
-  rpc ServerMetadata(ServerMetadataRequest) returns (ServerMetadataResponse) {}
-  rpc ModelMetadata(ModelMetadataRequest) returns (ModelMetadataResponse) {}
-  rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse) {}
-  // galemind specific
-  rpc ModelInferAsync(stream ModelInferRequest) returns (stream ModelInferResponse) {}
 
-  // Enhanced unified inference with protocol support and streaming
-  rpc UnifiedInfer(UnifiedInferRequest) returns (UnifiedInferResponse) {}
-  rpc UnifiedInferStream(stream UnifiedInferRequest) returns (stream UnifiedInferResponse) {}
+  // Check readiness of the inference server.
+  rpc ServerReady(ServerReadyRequest) returns (ServerReadyResponse) {}
+
+  // Check readiness of a model in the inference server.
+  rpc ModelReady(ModelReadyRequest) returns (ModelReadyResponse) {}
+
+  // Get server metadata.
+  rpc ServerMetadata(ServerMetadataRequest) returns (ServerMetadataResponse) {}
+
+  // Get model metadata.
+  rpc ModelMetadata(ModelMetadataRequest) returns (ModelMetadataResponse) {}
+
+  // Perform inference using a specific model.
+  rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse) {}
 }
 
 message ServerLiveRequest {}
 
 message ServerLiveResponse
 {
+  // True if the inference server is live, false if not live.
   bool live = 1;
 }
 
@@ -42,9 +43,9 @@ message ServerReadyRequest {}
 
 message ServerReadyResponse
 {
+  // True if the inference server is ready, false if not ready.
   bool ready = 1;
 }
-
 
 message ModelReadyRequest
 {
@@ -58,6 +59,7 @@ message ModelReadyRequest
 
 message ModelReadyResponse
 {
+  // True if the model is ready, false if not ready.
   bool ready = 1;
 }
 
@@ -65,52 +67,73 @@ message ServerMetadataRequest {}
 
 message ServerMetadataResponse
 {
+  // The server name.
   string name = 1;
 
+  // The server version.
   string version = 2;
 
+  // The extensions supported by the server.
   repeated string extensions = 3;
 }
 
-message ModelMetadataRequest 
+message ModelMetadataRequest
 {
+  // The name of the model.
   string name = 1;
 
+  // The version of the model to check for readiness. If not given the
+  // server will choose a version based on the model and internal policy.
   string version = 2;
 }
 
 message ModelMetadataResponse
 {
+  // Metadata for a tensor.
   message TensorMetadata
   {
+    // The tensor name.
     string name = 1;
 
+    // The tensor data type.
     string datatype = 2;
 
+    // The tensor shape. A variable-size dimension is represented
+    // by a -1 value.
     repeated int64 shape = 3;
   }
 
+  // The model name.
   string name = 1;
 
+  // The versions of the model available on the server.
   repeated string versions = 2;
 
+  // The model's platform. See Platforms.
   string platform = 3;
 
+  // The model's inputs.
   repeated TensorMetadata inputs = 4;
 
+  // The model's outputs.
   repeated TensorMetadata outputs = 5;
 }
 
 message ModelInferRequest
 {
+  // An input tensor for an inference request.
   message InferInputTensor
   {
+    // The tensor name.
     string name = 1;
 
+    // The tensor data type.
     string datatype = 2;
 
+    // The tensor shape.
     repeated int64 shape = 3;
 
+    // Optional inference input tensor parameters.
     map<string, InferParameter> parameters = 4;
 
     // The tensor contents using a data-type format. This field must
@@ -122,20 +145,22 @@ message ModelInferRequest
   // An output tensor requested for an inference request.
   message InferRequestedOutputTensor
   {
+    // The tensor name.
     string name = 1;
 
     // Optional requested output tensor parameters.
     map<string, InferParameter> parameters = 2;
   }
 
+  // The name of the model to use for inferencing.
   string model_name = 1;
 
   // The version of the model to use for inference. If not given the
   // server will choose a version based on the model and internal policy.
   string model_version = 2;
 
-  // Optional identifier for the request. If specified will be
-  // returned in the response.
+  // Optional identifier for the request. If specified will be returned
+  // in the response.
   string id = 3;
 
   // Optional inference parameters.
@@ -156,8 +181,9 @@ message ModelInferRequest
   // what is expected by the tensor's shape and data type. The raw
   // data must be the flattened, one-dimensional, row-major order of
   // the tensor elements without any stride or padding between the
-  // elements. Note that the FP16 and BF16 data types must be represented as
-  // raw content as there is no specific data type for a 16-bit float type.
+  // elements. Note that the FP16 and BF16 data types must be represented
+  // as raw content as there is no specific data type for a 16-bit float
+  // type.
   //
   // If this field is specified then InferInputTensor::contents must
   // not be specified for any input tensor.
@@ -166,12 +192,16 @@ message ModelInferRequest
 
 message ModelInferResponse
 {
+  // An output tensor returned for an inference request.
   message InferOutputTensor
   {
+    // The tensor name.
     string name = 1;
 
+    // The tensor data type.
     string datatype = 2;
 
+    // The tensor shape.
     repeated int64 shape = 3;
 
     // Optional output tensor parameters.
@@ -183,8 +213,10 @@ message ModelInferResponse
     InferTensorContents contents = 5;
   }
 
+  // The name of the model used for inference.
   string model_name = 1;
 
+  // The version of the model used for inference.
   string model_version = 2;
 
   // The id of the inference request if one was specified.
@@ -198,35 +230,39 @@ message ModelInferResponse
 
   // The data contained in an output tensor can be represented in
   // "raw" bytes form or in the repeated type that matches the
-  // tensor's data type. To use the raw representation 'raw_output_contents'
-  // must be initialized with data for each tensor in the same order as
-  // 'outputs'. For each tensor, the size of this content must match
-  // what is expected by the tensor's shape and data type. The raw
-  // data must be the flattened, one-dimensional, row-major order of
-  // the tensor elements without any stride or padding between the
-  // elements. Note that the FP16 and BF16 data types must be represented as
-  // raw content as there is no specific data type for a 16-bit float type.
+  // tensor's data type. To use the raw representation
+  // 'raw_output_contents' must be initialized with data for each tensor
+  // in the same order as 'outputs'. For each tensor, the size of this
+  // content must match what is expected by the tensor's shape and data
+  // type. The raw data must be the flattened, one-dimensional,
+  // row-major order of the tensor elements without any stride or padding
+  // between the elements. Note that the FP16 and BF16 data types must be
+  // represented as raw content as there is no specific data type for a
+  // 16-bit float type.
   //
   // If this field is specified then InferOutputTensor::contents must
   // not be specified for any output tensor.
   repeated bytes raw_output_contents = 6;
 }
 
-// An inference parameter value. The Parameters message describes a 
-// “name”/”value” pair, where the “name” is the name of the parameter
-// and the “value” is a boolean, integer, or string corresponding to 
+// An inference parameter value. The Parameters message describes a
+// "name"/"value" pair, where the "name" is the name of the parameter
+// and the "value" is a boolean, integer, or string corresponding to
 // the parameter.
 message InferParameter
 {
+  // The parameter value can be a string, an int64, a boolean
+  // or a message specific to a predefined parameter.
   oneof parameter_choice
   {
+    // A boolean parameter value.
     bool bool_param = 1;
 
+    // An int64 parameter value.
     int64 int64_param = 2;
 
-    double f64_param = 3;
-
-    string string_param = 4;
+    // A string parameter value.
+    string string_param = 3;
   }
 }
 
@@ -276,151 +312,4 @@ message InferTensorContents
   // expected by the tensor's shape. The contents must be the flattened,
   // one-dimensional, row-major order of the tensor elements.
   repeated bytes bytes_contents = 8;
-}
-
-// Enhanced unified inference protocol support
-enum InferenceProtocol {
-  PROTOCOL_UNSPECIFIED = 0;
-  PROTOCOL_GALEMIND = 1;
-  PROTOCOL_OPENAI = 2;
-}
-
-// Content type for message payload
-enum ContentType {
-  CONTENT_TYPE_UNSPECIFIED = 0;
-  CONTENT_TYPE_TEXT = 1;
-  CONTENT_TYPE_BINARY = 2;
-  CONTENT_TYPE_BASE64 = 3;
-}
-
-// Message content with different encoding options
-message MessageContent {
-  ContentType content_type = 1;
-
-  oneof content {
-    string text_content = 2;
-    bytes binary_content = 3;
-    string base64_content = 4;
-  }
-}
-
-// Streaming metadata for chunk handling
-message StreamMetadata {
-  // Unique identifier for the stream session
-  string stream_id = 1;
-
-  // Chunk sequence number for ordering
-  uint64 chunk_sequence = 2;
-
-  // Flag indicating if this is a streaming message
-  bool is_streaming = 3;
-
-  // Flag indicating end of stream
-  bool end_of_stream = 4;
-
-  // Total number of expected chunks (optional, if known)
-  optional uint64 total_chunks = 5;
-}
-
-// Enhanced unified inference request
-message UnifiedInferRequest {
-  // Protocol specification (defaults to Galemind for backward compatibility)
-  InferenceProtocol protocol = 1;
-
-  // Original ModelInferRequest for backward compatibility
-  optional ModelInferRequest legacy_request = 2;
-
-  // Enhanced message content
-  MessageContent content = 3;
-
-  // Streaming metadata
-  optional StreamMetadata stream_metadata = 4;
-
-  // Model identification
-  string model_name = 5;
-  string model_version = 6;
-
-  // Request identification
-  string request_id = 7;
-
-  // Protocol-specific parameters
-  map<string, InferParameter> parameters = 8;
-
-  // Additional metadata for the request
-  map<string, string> metadata = 9;
-}
-
-// Enhanced unified inference response
-message UnifiedInferResponse {
-  // Protocol used for this response
-  InferenceProtocol protocol = 1;
-
-  // Original ModelInferResponse for backward compatibility
-  optional ModelInferResponse legacy_response = 2;
-
-  // Enhanced response content
-  MessageContent content = 3;
-
-  // Streaming metadata
-  optional StreamMetadata stream_metadata = 4;
-
-  // Model identification
-  string model_name = 5;
-  string model_version = 6;
-
-  // Request identification (echoed from request)
-  string request_id = 7;
-
-  // Response status and error information
-  ResponseStatus status = 8;
-
-  // Protocol-specific parameters
-  map<string, InferParameter> parameters = 9;
-
-  // Additional metadata for the response
-  map<string, string> metadata = 10;
-
-  // Performance metrics
-  optional PerformanceMetrics metrics = 11;
-}
-
-// Response status information
-message ResponseStatus {
-  enum StatusCode {
-    STATUS_UNKNOWN = 0;
-    STATUS_SUCCESS = 1;
-    STATUS_ERROR = 2;
-    STATUS_TIMEOUT = 3;
-    STATUS_RATE_LIMITED = 4;
-    STATUS_INVALID_REQUEST = 5;
-  }
-
-  StatusCode code = 1;
-  string message = 2;
-  map<string, string> details = 3;
-}
-
-// Performance and usage metrics
-message PerformanceMetrics {
-  // Processing time in milliseconds
-  uint64 processing_time_ms = 1;
-
-  // Queue time in milliseconds
-  uint64 queue_time_ms = 2;
-
-  // Token usage (for LLM models)
-  optional TokenUsage token_usage = 3;
-
-  // Memory usage in bytes
-  optional uint64 memory_usage_bytes = 4;
-
-  // GPU utilization percentage (0-100)
-  optional float gpu_utilization = 5;
-}
-
-// Token usage information for language models
-message TokenUsage {
-  uint32 prompt_tokens = 1;
-  uint32 completion_tokens = 2;
-  uint32 total_tokens = 3;
 }
