@@ -13,6 +13,7 @@ pub mod datatype;
 pub mod error;
 pub mod infer;
 pub mod model;
+pub mod registry;
 pub mod tensor;
 pub mod traits;
 
@@ -21,6 +22,7 @@ pub use datatype::DataType;
 pub use error::InferError;
 pub use infer::{InferRequest, InferResponse, Parameter, Parameters, RequestedOutput};
 pub use model::{ModelArtifact, ModelConfig, ModelKey, ModelMetadata, ModelRef, TensorMetadata};
+pub use registry::BackendRegistry;
 pub use tensor::{Tensor, TensorData};
 pub use traits::{
     Backend, BackendFactory, CacheStats, Clock, Inference, ModelCache, ModelStore, ModelUsage,

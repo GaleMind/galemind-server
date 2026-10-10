@@ -1,0 +1,29 @@
+[package]
+name = "galemind-store"
+description = "Model repository stores for the GaleMind inference server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["rocksdb-store"]
+# RocksDB-backed artifact, metadata and usage store. Needs libclang at build
+# time; without it, build with --no-default-features to fall back to the
+# filesystem store and an in-memory usage index.
+rocksdb-store = ["dep:rocksdb"]
+
+[dependencies]
+galemind-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rocksdb = { version = "0.24", default-features = false, features = [
+    "lz4",
+    "bindgen-runtime",
+], optional = true }
+
+[dev-dependencies]
+tempfile = "3.14"

@@ -1,0 +1,15 @@
+[package]
+name = "galemind-cache"
+description = "Two-tier model cache for the GaleMind inference server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+galemind-core.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+galemind-store.workspace = true
