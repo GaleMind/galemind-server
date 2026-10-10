@@ -15,7 +15,7 @@ dependencies = [
 # are only needed by the parts that use them.
 grpc = ["grpcio>=1.60", "protobuf>=4.25"]
 numpy = ["numpy>=1.21"]
-dev = ["pytest>=7.0", "grpcio-tools>=1.60"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "grpcio-tools>=1.60"]
 
 [build-system]
 requires = ["hatchling"]

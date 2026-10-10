@@ -47,3 +47,53 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+            toolchain: stable
+            override: true
+            components: llvm-tools-preview
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coverage-
+
+      # libclang is for bindgen, which librocksdb-sys runs on every build; the
+      # runner's version moves with the image, so let clang-sys find it rather
+      # than pinning a path in LIBCLANG_PATH.
+      - name: Install protoc and libclang
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # .cargo/config.toml points ROCKSDB_LIB_DIR at an archive staged by
+      # scripts/stage-rocksdb-lib.sh, which is developer-local and absent from
+      # the checkout. ROCKSDB_COMPILE overrides that and builds the vendored
+      # sources instead.
+      - name: Measure coverage
+        env:
+          ROCKSDB_COMPILE: 1
+        run: make coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: reports/coverage

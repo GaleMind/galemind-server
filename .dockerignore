@@ -1,9 +1,26 @@
-target/
-.venv/
+# Build artifacts and caches. The patterns are `**/`-prefixed because a bare
+# `target/` matches only the repository root, and the end-to-end suite keeps
+# its own target directory under src/e2e -- which was 2.2 GB of the build
+# context before this line existed.
+**/target/
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/*.log
+
+# The documentation site's own outputs.
+website/build/
+website/.docusaurus/
+
+# The durable store and load-test reports: state, not source.
 data/
+reports/
+
+# The prebuilt RocksDB archive. Image builds compile the vendored sources
+# instead, so staging a host-built archive into them would link something
+# built against a different libstdc++.
+.cargo/
+
 .git/
 .github/
 docs/
-*.log
-__pycache__/
-.cargo/
