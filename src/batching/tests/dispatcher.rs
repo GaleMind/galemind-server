@@ -17,6 +17,12 @@ struct DoublingBackend {
     metadata: ModelMetadata,
     calls: Arc<AtomicUsize>,
     largest_call_rows: Arc<AtomicUsize>,
+    /// Executions running right now, and the most there have ever been.
+    ///
+    /// The second is what says whether the dispatcher overlaps batches at
+    /// all: a counter of calls cannot tell concurrency from a queue.
+    in_flight: Arc<AtomicUsize>,
+    most_in_flight: Arc<AtomicUsize>,
     delay: Duration,
     fail: bool,
 }
@@ -56,6 +62,12 @@ impl Backend for DoublingBackend {
     }
 
     fn infer(&self, request: &InferRequest) -> Result<InferResponse, InferError> {
+        let running = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most_in_flight.fetch_max(running, Ordering::SeqCst);
+        // Decremented however this returns, including on the failure paths
+        // below, so the high-water mark means what it says.
+        let _leave = LeaveOnDrop(Arc::clone(&self.in_flight));
+
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
         }
@@ -96,6 +108,15 @@ impl Backend for DoublingBackend {
     }
 }
 
+/// Decrements the in-flight count when an execution leaves `infer`.
+struct LeaveOnDrop(Arc<AtomicUsize>);
+
+impl Drop for LeaveOnDrop {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A cache that always hands out the same backend.
 struct StaticCache {
     backend: Arc<dyn Backend>,
@@ -127,6 +148,7 @@ struct Harness {
     dispatcher: Dispatcher,
     calls: Arc<AtomicUsize>,
     largest_call_rows: Arc<AtomicUsize>,
+    most_in_flight: Arc<AtomicUsize>,
     clock: Arc<TestClock>,
 }
 
@@ -140,10 +162,13 @@ fn harness(
 ) -> Harness {
     let calls = Arc::new(AtomicUsize::new(0));
     let largest_call_rows = Arc::new(AtomicUsize::new(0));
+    let most_in_flight = Arc::new(AtomicUsize::new(0));
     let backend = Arc::new(DoublingBackend {
         metadata: DoublingBackend::metadata(batchable),
         calls: Arc::clone(&calls),
         largest_call_rows: Arc::clone(&largest_call_rows),
+        in_flight: Arc::new(AtomicUsize::new(0)),
+        most_in_flight: Arc::clone(&most_in_flight),
         delay,
         fail,
     });
@@ -163,11 +188,12 @@ fn harness(
         ),
         calls,
         largest_call_rows,
+        most_in_flight,
         clock,
     }
 }
 
-/// A request whose single row is `[seed, seed + 1]`.
+/// A request of `rows` rows, the `r`th being `[seed + r, seed + r + 0.5]`.
 fn request(seed: f32, rows: usize) -> InferRequest {
     let values: Vec<f32> = (0..rows)
         .flat_map(|r| [seed + r as f32, seed + r as f32 + 0.5])
@@ -405,6 +431,8 @@ async fn a_model_that_cannot_be_loaded_fails_the_request() {
             metadata: DoublingBackend::metadata(true),
             calls: Arc::new(AtomicUsize::new(0)),
             largest_call_rows: Arc::new(AtomicUsize::new(0)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            most_in_flight: Arc::new(AtomicUsize::new(0)),
             delay: Duration::ZERO,
             fail: false,
         }),
@@ -441,4 +469,135 @@ async fn requests_submitted_after_shutdown_are_refused() {
     );
     h.dispatcher.submit(request(1.0, 1), 0).await.unwrap();
     h.dispatcher.shutdown().await;
+}
+
+/// The dispatcher runs several batches at once, which is what lets one hot
+/// model use more than one core.
+///
+/// Measured as overlap rather than as throughput: the backend reports the
+/// most executions it ever had running at the same time, and a dispatcher
+/// that awaited each batch before forming the next could never report more
+/// than one however fast it went.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batches_of_one_model_execute_concurrently() {
+    // A batch of one request, so eight requests are eight batches rather
+    // than one merged call -- it is batches that are being overlapped here.
+    let harness = harness(
+        true,
+        Duration::ZERO,
+        1,
+        DispatcherConfig {
+            max_concurrent_batches: 4,
+            ..DispatcherConfig::default()
+        },
+        Duration::from_millis(60),
+        false,
+    );
+
+    let harness = Arc::new(harness);
+    let submissions: Vec<_> = (0..8)
+        .map(|seed| {
+            let harness = Arc::clone(&harness);
+            tokio::spawn(async move { harness.dispatcher.submit(request(seed as f32, 1), 0).await })
+        })
+        .collect();
+    for submission in submissions {
+        submission
+            .await
+            .expect("the task")
+            .expect("every request is answered");
+    }
+
+    let most = harness.most_in_flight.load(Ordering::SeqCst);
+    assert!(
+        most > 1,
+        "the dispatcher ran one batch at a time: a model can never use more \
+         than one core (most in flight: {most})"
+    );
+    assert!(
+        most <= 4,
+        "the per-model bound was exceeded: {most} batches at once"
+    );
+    assert_eq!(harness.calls.load(Ordering::SeqCst), 8);
+}
+
+/// And the bound is a bound: at one, the old serial behaviour is still
+/// available for a deployment that wants the smallest possible working set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_concurrent_batch_is_still_one_at_a_time() {
+    let harness = harness(
+        true,
+        Duration::ZERO,
+        1,
+        DispatcherConfig {
+            max_concurrent_batches: 1,
+            ..DispatcherConfig::default()
+        },
+        Duration::from_millis(20),
+        false,
+    );
+
+    let harness = Arc::new(harness);
+    let submissions: Vec<_> = (0..6)
+        .map(|seed| {
+            let harness = Arc::clone(&harness);
+            tokio::spawn(async move { harness.dispatcher.submit(request(seed as f32, 1), 0).await })
+        })
+        .collect();
+    for submission in submissions {
+        submission
+            .await
+            .expect("the task")
+            .expect("every request is answered");
+    }
+
+    assert_eq!(
+        harness.most_in_flight.load(Ordering::SeqCst),
+        1,
+        "a bound of one must serialise"
+    );
+    assert_eq!(harness.calls.load(Ordering::SeqCst), 6);
+}
+
+/// Concurrency must not cost anyone their own answer: with batches
+/// overlapping and completing out of order, each caller still gets the rows
+/// it sent and nobody else's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_batches_still_answer_each_caller_with_its_own_rows() {
+    let harness = harness(
+        true,
+        Duration::ZERO,
+        1,
+        DispatcherConfig {
+            max_concurrent_batches: 4,
+            ..DispatcherConfig::default()
+        },
+        // Uneven delays, so completions interleave rather than finishing in
+        // the order they started.
+        Duration::from_millis(5),
+        false,
+    );
+
+    let harness = Arc::new(harness);
+    let submissions: Vec<_> = (0..12)
+        .map(|seed| {
+            let harness = Arc::clone(&harness);
+            tokio::spawn(async move {
+                let response = harness
+                    .dispatcher
+                    .submit(request(seed as f32, 1), 0)
+                    .await
+                    .expect("the backend succeeded");
+                (seed, response)
+            })
+        })
+        .collect();
+    for submission in submissions {
+        let (seed, response) = submission.await.expect("the task");
+        assert_eq!(
+            doubled(&response),
+            vec![seed as f32 * 2.0, seed as f32 * 2.0 + 1.0],
+            "request {seed} was given another request's rows"
+        );
+    }
 }

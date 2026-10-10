@@ -250,6 +250,25 @@ pub struct PrometheusReport {
     pub cache: CacheStats,
     pub resources: ResourceSnapshot,
     pub loaded_models: usize,
+    /// What the memory guard has done, when one is configured.
+    pub memory: Option<MemoryReclaimStats>,
+}
+
+/// What the memory high-water guard has done so far.
+///
+/// Zeroes with a mark configured are the healthy case and the reason this is
+/// reported at all: a dashboard needs to be able to see that the limit exists
+/// and is not being hit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryReclaimStats {
+    /// Resident bytes above which the server reclaims.
+    pub high_water_bytes: u64,
+    /// Times the server has reclaimed.
+    pub reclaims: u64,
+    /// Times a reclaim went on to unload models, which costs the next
+    /// request for each of them. A rising count is a server that needs more
+    /// memory or a smaller batch, not a server that is working as intended.
+    pub unloads: u64,
 }
 
 /// Renders a report as Prometheus text exposition.
@@ -296,6 +315,36 @@ pub fn render_prometheus(report: &PrometheusReport) -> String {
         "gm_server_platform{{platform=\"{}\",os=\"{}\"}} 1",
         report.runtime.platform, report.runtime.os
     );
+
+    if let Some(memory) = report.memory {
+        for (name, kind, help, value) in [
+            (
+                "gm_memory_high_water_bytes",
+                "gauge",
+                "Resident bytes above which the server reclaims memory. Zero \
+                 when no mark is configured.",
+                memory.high_water_bytes,
+            ),
+            (
+                "gm_memory_reclaim_count",
+                "counter",
+                "Times the server has gone over the mark and reclaimed. \
+                 Reclaiming is cheap but not free, so a count climbing \
+                 steadily means the mark is below this server's working set.",
+                memory.reclaims,
+            ),
+            (
+                "gm_memory_reclaim_unload_count",
+                "counter",
+                "Times a reclaim was not enough and the models were unloaded \
+                 as well, which costs the next request for each of them.",
+                memory.unloads,
+            ),
+        ] {
+            metric(&mut out, name, kind, help);
+            let _ = writeln!(out, "{name} {value}");
+        }
+    }
 
     metric(
         &mut out,
@@ -713,6 +762,11 @@ mod tests {
                 expirations: 0,
                 resident_bytes: 4_096,
             },
+            memory: Some(MemoryReclaimStats {
+                high_water_bytes: 500 * 1024 * 1024,
+                reclaims: 2,
+                unloads: 1,
+            }),
             resources: ResourceSnapshot {
                 cpu_utilization: 0.25,
                 memory_bytes: 1_048_576,
@@ -1016,6 +1070,17 @@ mod tests {
         );
         assert!(text.contains("\ngm_server_cpu_mem_arena 0\n"), "{text}");
         assert!(text.contains("\ngm_malloc_arena_max 2\n"), "{text}");
+        // A configured mark and what has happened against it, so a dashboard
+        // can show the limit as well as the breaches.
+        assert!(
+            text.contains("\ngm_memory_high_water_bytes 524288000\n"),
+            "{text}"
+        );
+        assert!(text.contains("\ngm_memory_reclaim_count 2\n"), "{text}");
+        assert!(
+            text.contains("\ngm_memory_reclaim_unload_count 1\n"),
+            "{text}"
+        );
         // Which allocator is running decides whether an idle server gives
         // memory back, so it is reported rather than left to be guessed.
         assert!(

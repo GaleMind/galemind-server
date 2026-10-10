@@ -33,6 +33,51 @@ A server with one large model and spare cores is the opposite case and wants
 of a graph at once, which is worth it for a wide graph such as a large
 ensemble and pointless for a deep chain.
 
+## One model, several cores
+
+The dispatcher pipelines: it forms the next batch while the current one is
+executing, rather than waiting for the execution to finish and then opening a
+batch window. The window is therefore paid in parallel with the work instead
+of after it, which measured about 5% on a small CNN (13 180 against 12 350
+requests a second, repeatable).
+
+What it does not do is run two batches of the same model at once, and
+`--max-concurrent-batches` defaults to 1 for a reason worth knowing:
+**ONNX Runtime's `Run` is not thread-safe.** The `ort` crate makes
+`Session::run` take `&mut self` precisely to prevent it, with a comment in
+its source that is unusually direct on the subject, so a session sits behind
+a mutex and a second execution of the same model only waits on it — while
+holding a blocking thread another model could have used. Measured, raising it
+to four cost about a fifth of the throughput and nothing else.
+
+So the parallelism for one model is **inside** one execution, which is
+`--intra-op-threads`. On the 256x256 generator at concurrency 4, over gRPC so
+that JSON encoding is not what is being measured:
+
+| `--intra-op-threads` | Cores used | Throughput |
+|---|---|---|
+| 1 | 1.2 | 200 req/s |
+| 2 | 2.0 | 319 req/s |
+| 4 | 2.6 | 341 req/s |
+| 8 | 3.3 | 354 req/s |
+
+Cores used is the process' own CPU time over the wall time of the run, not a
+sampled utilisation. The gain flattens because the graph has limited
+parallelism and is partly memory-bandwidth bound, which is the normal shape
+for convolutions on a CPU.
+
+The rule that follows: **many models, one operator thread each; one model,
+several.** A repository of ten small models wants the default, where the
+parallelism comes from serving them side by side. A server with one heavy
+model wants `--intra-op-threads` raised, or `intra_op_threads` set in that
+model's `config.json` so only it pays.
+
+`--max-concurrent-batches` stays because the serialisation belongs to the
+backend rather than to the dispatcher: a backend that can run a model
+concurrently — a pool of sessions, or a runtime whose calls are thread-safe
+-- makes it the knob that uses it, and executions are already spawned to
+allow for it.
+
 ## The plan is logged and published
 
 ```text

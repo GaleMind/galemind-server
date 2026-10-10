@@ -250,11 +250,51 @@ pub struct MetricsArgs {
     /// counters are unaffected and update per request.
     #[arg(long, env = "GALEMIND_METRICS_INTERVAL_MS", default_value_t = 1_000)]
     pub metrics_interval_ms: u64,
+
+    /// Resident memory, in megabytes, above which the server reclaims.
+    ///
+    /// It asks the allocator for its retained pages first, which loses
+    /// nothing -- they are pages already freed, kept in case the work came
+    /// back -- and unloads the models only if that was not enough. Zero turns
+    /// it off.
+    ///
+    /// Returning pages is not free: the next allocation faults them back in.
+    /// So this is a limit to respect, not a target to sit at, and nothing
+    /// happens below it.
+    #[arg(
+        long,
+        env = "GALEMIND_MEMORY_HIGH_WATER_MB",
+        default_value_t = 500,
+        value_name = "MB"
+    )]
+    pub memory_high_water_mb: u64,
+
+    /// Seconds to wait after a reclaim before another may run.
+    ///
+    /// A server whose steady state is over the mark would otherwise purge on
+    /// every sample and spend itself faulting the same pages straight back
+    /// in.
+    #[arg(
+        long,
+        env = "GALEMIND_MEMORY_RECLAIM_COOLDOWN_SECS",
+        default_value_t = 30,
+        value_name = "SECS"
+    )]
+    pub memory_reclaim_cooldown_secs: u64,
 }
 
 impl MetricsArgs {
     pub fn interval(&self) -> Duration {
         Duration::from_millis(self.metrics_interval_ms.max(100))
+    }
+
+    /// The configured high-water mark in bytes, or `None` when it is off.
+    pub fn memory_high_water_bytes(&self) -> Option<u64> {
+        (self.memory_high_water_mb > 0).then(|| self.memory_high_water_mb * 1024 * 1024)
+    }
+
+    pub fn reclaim_cooldown(&self) -> Duration {
+        Duration::from_secs(self.memory_reclaim_cooldown_secs)
     }
 }
 
@@ -311,6 +351,27 @@ pub struct BatchingArgs {
     /// Fail a request that has waited this long rather than running it late.
     #[arg(long, env = "GALEMIND_QUEUE_TIMEOUT_SECS", default_value_t = 10)]
     pub queue_timeout_secs: u64,
+
+    /// Batches of one model that may be executing at the same time.
+    ///
+    /// The dispatcher pipelines regardless of this: it forms the next batch
+    /// while the current one runs, so a batch window is paid in parallel
+    /// with an execution rather than after it.
+    ///
+    /// Leave it at one unless the backend can run a model concurrently.
+    /// ONNX Runtime cannot -- its `Run` is not thread-safe, so a session
+    /// sits behind a mutex and a second execution only waits on it, holding
+    /// a blocking thread another model could use. Measured, raising it to
+    /// four cost about a fifth of the throughput. To make one model use
+    /// several cores, raise `--intra-op-threads`, which parallelises inside
+    /// one execution.
+    #[arg(
+        long,
+        env = "GALEMIND_MAX_CONCURRENT_BATCHES",
+        default_value_t = 1,
+        value_name = "N"
+    )]
+    pub max_concurrent_batches: usize,
 }
 
 impl CacheArgs {
@@ -366,6 +427,10 @@ mod tests {
         assert_eq!(args.repository.store, StoreKind::Rocksdb);
         assert_eq!(args.cache.cache_ttl_secs, 3_600);
         assert_eq!(args.batching.max_batch_size, 10);
+        // One, because ONNX Runtime serialises a session's own executions;
+        // the dispatcher pipelines rather than parallelising them.
+        assert_eq!(args.batching.max_concurrent_batches, 1);
+        assert_eq!(args.metrics.memory_high_water_mb, 500);
         assert!(!args.preload);
     }
 
@@ -415,6 +480,7 @@ mod tests {
             max_batch_window_micros: 100,
             queue_capacity: 8,
             queue_timeout_secs: 1,
+            max_concurrent_batches: 4,
         };
         assert_eq!(batching.max_window(), batching.min_window());
     }
@@ -516,6 +582,8 @@ mod tests {
         let metrics = MetricsArgs {
             allow_metrics: true,
             metrics_interval_ms: 0,
+            memory_high_water_mb: 0,
+            memory_reclaim_cooldown_secs: 30,
         };
         assert_eq!(metrics.interval(), Duration::from_millis(100));
     }

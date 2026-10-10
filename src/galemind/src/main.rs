@@ -33,6 +33,109 @@ const ALLOCATOR_NAME: &str = "jemalloc";
 #[cfg(not(feature = "jemalloc"))]
 const ALLOCATOR_NAME: &str = galemind_service::SYSTEM_ALLOCATOR;
 
+/// Returns jemalloc's retained pages on demand, for the memory guard.
+///
+/// jemalloc hands pages back once they have gone unused for
+/// `dirty_decay_ms`, which is right for a server that is merely idle and too
+/// slow for one that is over a memory limit now. Writing a decay of zero
+/// purges what is eligible immediately; the configured interval is then put
+/// back, so a reclaim borrows the aggressive setting rather than switching to
+/// it.
+///
+/// `arena.4096.*` is jemalloc's "every arena" index. The writes go through
+/// the typed `mallctl` API, so none of this needs `unsafe`: the FFI is inside
+/// jemalloc's own crate, as it is for the allocator itself.
+#[cfg(feature = "jemalloc")]
+struct JemallocReclaim;
+
+#[cfg(feature = "jemalloc")]
+impl JemallocReclaim {
+    /// jemalloc's index meaning "every arena".
+    const ALL_ARENAS: u32 = 4096;
+
+    /// Asks every arena to purge one kind of page, and restores the window.
+    ///
+    /// `dirty` pages are freed but still mapped; `muzzy` ones have been
+    /// madvised away without being unmapped. Both have to be asked for,
+    /// since returning one and keeping the other halves the effect.
+    ///
+    /// The all-arenas index is tried first and the real arenas one by one if
+    /// it refuses, which it does under load. A partial purge is still a
+    /// purge, so this reports how many arenas accepted it rather than
+    /// failing on the first that did not.
+    fn purge(key: &str, configured: &[u8]) -> Result<usize, String> {
+        use tikv_jemalloc_ctl::{Access, AsName};
+
+        // What to go back to, read from jemalloc's own options rather than
+        // from a copy of them kept here.
+        let window: isize = configured.name().read().unwrap_or(10_000);
+        let set = |arena: u32, ms: isize| -> Result<(), String> {
+            let name = format!("arena.{arena}.{key}\0");
+            name.as_bytes()
+                .name()
+                .write(ms)
+                .map_err(|e| format!("arena.{arena}.{key}: {e}"))
+        };
+
+        let mut purged = 0;
+        let mut last = String::new();
+        match set(Self::ALL_ARENAS, 0) {
+            Ok(()) => purged += 1,
+            Err(e) => {
+                last = e;
+                // Only arenas that exist accept this, and which exist
+                // depends on how many threads have allocated, so a refusal
+                // per unused arena is expected rather than a failure.
+                let narenas: u32 = b"arenas.narenas\0".name().read().unwrap_or(0);
+                for arena in 0..narenas {
+                    if set(arena, 0).is_ok() {
+                        purged += 1;
+                    }
+                }
+            }
+        }
+
+        // Put the window back, whatever happened: leaving a decay of zero in
+        // place would purge after every free, which is the opposite of what
+        // the allocator was chosen for.
+        let window = window.max(0);
+        let _ = set(Self::ALL_ARENAS, window);
+        let narenas: u32 = b"arenas.narenas\0".name().read().unwrap_or(0);
+        for arena in 0..narenas {
+            let _ = set(arena, window);
+        }
+
+        if purged > 0 {
+            Ok(purged)
+        } else {
+            Err(last)
+        }
+    }
+}
+
+#[cfg(feature = "jemalloc")]
+impl galemind_service::AllocatorReclaim for JemallocReclaim {
+    fn name(&self) -> &'static str {
+        "jemalloc"
+    }
+
+    fn reclaim(&self) -> galemind_service::Reclaim {
+        let dirty = Self::purge("dirty_decay_ms", b"opt.dirty_decay_ms\0");
+        let muzzy = Self::purge("muzzy_decay_ms", b"opt.muzzy_decay_ms\0");
+
+        match (&dirty, &muzzy) {
+            // Either kind purged is progress; both refusing is a refusal.
+            (Ok(_), _) | (_, Ok(_)) => {
+                debug!(?dirty, ?muzzy, "asked jemalloc to return its pages");
+                galemind_service::Reclaim::Done
+            }
+            (Err(dirty), Err(muzzy)) => {
+                galemind_service::Reclaim::Refused(format!("dirty: {dirty}; muzzy: {muzzy}"))
+            }
+        }
+    }
+}
+
 /// Turns on the thread that returns unused pages without being asked.
 ///
 /// jemalloc's decay is on by default -- a page unused for ten seconds is
@@ -77,7 +180,7 @@ use rest_server::{Authenticator, NoAuth, StaticTokenAuth};
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// Builds the async runtime by hand rather than with `#[tokio::main]`.
@@ -184,7 +287,16 @@ async fn build_store(
     }
 }
 
-async fn build_service(args: &ServeArgs) -> Result<Arc<InferenceService>> {
+/// Builds the service, and the memory guard that watches it.
+///
+/// They are built together because the service publishes the guard's
+/// counters, so the guard has to exist before the service is built.
+type ServiceAndGuard = (
+    Arc<InferenceService>,
+    Option<Arc<galemind_service::MemoryGuard>>,
+);
+
+async fn build_service(args: &ServeArgs) -> Result<ServiceAndGuard> {
     let (store, usage) = build_store(&args.repository).await?;
 
     let onnx = OnnxRuntimeConfig {
@@ -259,10 +371,48 @@ async fn build_service(args: &ServeArgs) -> Result<Arc<InferenceService>> {
             queue_capacity: args.batching.queue_capacity,
             queue_timeout: args.batching.queue_timeout(),
             sample_window: 64,
+            max_concurrent_batches: args.batching.max_concurrent_batches,
         })
         .with_runtime_info(runtime);
     if let Some(usage) = usage {
         builder = builder.with_usage_index(usage);
+    }
+
+    // The memory guard. Its reclaim seam is implemented by whoever installed
+    // the allocator, which is this crate; a build without jemalloc gets one
+    // that says it cannot, so the mark is still honoured as far as unloading
+    // models can honour it, and the log says why that is all it did.
+    #[cfg(feature = "jemalloc")]
+    let reclaim: Arc<dyn galemind_service::AllocatorReclaim> = Arc::new(JemallocReclaim);
+    #[cfg(not(feature = "jemalloc"))]
+    let reclaim: Arc<dyn galemind_service::AllocatorReclaim> =
+        Arc::new(galemind_service::NoReclaim);
+
+    let guard = match args.metrics.memory_high_water_bytes() {
+        Some(high_water_bytes) => {
+            info!(
+                mark_mb = high_water_bytes / (1024 * 1024),
+                cooldown_secs = args.metrics.memory_reclaim_cooldown_secs,
+                allocator = reclaim.name(),
+                "reclaiming memory above the high-water mark"
+            );
+            Some(Arc::new(galemind_service::MemoryGuard::new(
+                galemind_service::MemoryGuardConfig {
+                    high_water_bytes: Some(high_water_bytes),
+                    cooldown: args.metrics.reclaim_cooldown(),
+                    may_unload: true,
+                },
+                Arc::clone(&reclaim),
+            )))
+        }
+        None => {
+            info!("no memory high-water mark; memory is bounded by the cache and the allocator");
+            None
+        }
+    };
+
+    if let Some(guard) = &guard {
+        builder = builder.with_memory_guard(Arc::clone(guard));
     }
 
     let service = builder.build().map_err(anyhow::Error::from)?;
@@ -283,11 +433,11 @@ async fn build_service(args: &ServeArgs) -> Result<Arc<InferenceService>> {
         }
     }
 
-    Ok(service)
+    Ok((service, guard))
 }
 
 async fn serve(args: ServeArgs) -> Result<()> {
-    let service = build_service(&args).await?;
+    let (service, guard) = build_service(&args).await?;
 
     // One shutdown signal fans out to every task, so Ctrl-C drains the queues
     // instead of cutting requests off mid-flight.
@@ -320,6 +470,19 @@ async fn serve(args: ServeArgs) -> Result<()> {
         Some((sampler, source)) => (Some(sampler), Some(source)),
         None => (None, None),
     };
+
+    let memory_guard = guard.map(|guard| {
+        tokio::spawn(guard_memory(
+            Arc::clone(&service),
+            guard,
+            // Checked more often than the mark is likely to be crossed, and
+            // far less often than a request arrives: reading
+            // /proc/self/status is cheap, purging is not, and the cooldown is
+            // what bounds the purging.
+            std::time::Duration::from_secs(2),
+            shutdown.subscribe(),
+        ))
+    });
 
     // An identity check is configuration, not code: the transport takes
     // whatever implements the trait, and the binary picks one.
@@ -362,6 +525,9 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let (rest, grpc) = tokio::join!(rest, grpc);
     service.shutdown().await;
     sweeper.abort();
+    if let Some(guard) = memory_guard {
+        guard.abort();
+    }
     if let Some(sampler) = metrics_sampler {
         sampler.abort();
     }
@@ -416,6 +582,54 @@ async fn sample_resources(
     loop {
         tokio::select! {
             _ = ticker.tick() => { service.sample_resources().await; }
+            _ = shutdown.recv() => return,
+        }
+    }
+}
+
+/// Watches resident memory and reclaims above the configured mark.
+///
+/// Runs on its own interval rather than inside the metrics sampler: a
+/// deployment may turn metrics off and still want its memory limit honoured,
+/// and a reclaim is a blocking syscall per region, which does not belong on
+/// the thread that answers a scrape.
+async fn guard_memory(
+    service: Arc<InferenceService>,
+    guard: Arc<galemind_service::MemoryGuard>,
+    interval: std::time::Duration,
+    mut shutdown: broadcast::Receiver<()>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                // The purge is a syscall per region, so it goes to the
+                // blocking pool; the unload is async, so it is decided here
+                // and run after. Hence the two-step rather than a closure
+                // that awaits.
+                let decide = {
+                    let guard = Arc::clone(&guard);
+                    tokio::task::spawn_blocking(move || guard.check())
+                };
+                let outcome = match decide.await {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        warn!("the memory guard panicked: {e}");
+                        continue;
+                    }
+                };
+                // Unloading is the guard's advice and this task's job: the
+                // cache is async and the guard is not.
+                if matches!(outcome, galemind_service::Reclaimed::StillOver { .. }) {
+                    let unloaded = service.unload_all().await;
+                    guard.record_unload(unloaded);
+                    if unloaded > 0 {
+                        warn!(unloaded, "unloaded models to get under the memory mark");
+                    }
+                }
+            }
             _ = shutdown.recv() => return,
         }
     }
@@ -510,5 +724,53 @@ async fn ingest(args: RepositoryArgs) -> Result<()> {
     {
         let _ = args;
         anyhow::bail!("this build has no RocksDB support")
+    }
+}
+
+#[cfg(all(test, feature = "jemalloc"))]
+mod jemalloc_tests {
+    use tikv_jemalloc_ctl::{Access, AsName};
+
+    /// Which mallctl spelling jemalloc actually accepts for a forced purge.
+    ///
+    /// Written as a test because it is a property of the linked jemalloc
+    /// rather than of this code: a version that stops accepting the form
+    /// used here would otherwise turn the memory guard into a no-op that
+    /// still logs success.
+    #[test]
+    fn the_purge_mallctl_is_accepted() {
+        let narenas: u32 = b"arenas.narenas\0"
+            .name()
+            .read()
+            .expect("jemalloc reports its arena count");
+        assert!(narenas > 0);
+        println!("narenas = {narenas}");
+
+        // The "every arena" index, which the first attempt used.
+        let all = b"arena.4096.dirty_decay_ms\0".name().write(0_isize);
+        println!("arena.4096.dirty_decay_ms = {all:?}");
+
+        // Per-arena, which is what the documentation describes as writable.
+        let mut ok = 0;
+        for i in 0..narenas {
+            let name = format!("arena.{i}.dirty_decay_ms\0");
+            if name.as_bytes().name().write(0_isize).is_ok() {
+                ok += 1;
+            }
+        }
+        println!("per-arena writes accepted: {ok} of {narenas}");
+
+        // The server runs with the background thread on, which is the only
+        // other difference between this test and the running server.
+        let started = tikv_jemalloc_ctl::background_thread::write(true);
+        println!("background_thread := true -> {started:?}");
+        let with_bg = b"arena.4096.dirty_decay_ms\0".name().write(0_isize);
+        println!("arena.4096.dirty_decay_ms with background thread = {with_bg:?}");
+        let restore = b"arena.4096.dirty_decay_ms\0".name().write(60_000_isize);
+        println!("restoring the window = {restore:?}");
+        assert!(
+            ok > 0 || all.is_ok(),
+            "no spelling of a forced purge was accepted"
+        );
     }
 }

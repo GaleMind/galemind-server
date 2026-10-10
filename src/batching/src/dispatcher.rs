@@ -24,6 +24,17 @@ use tracing::{debug, trace, warn};
 
 type Result<T> = std::result::Result<T, InferError>;
 
+/// The traffic averages, shared between the loop and the executions it spawns.
+type SharedMeter = Arc<std::sync::Mutex<TrafficMeter>>;
+
+/// Takes the meter's lock, recovering from a poisoned one.
+///
+/// A panic while recording a batch average is not a reason to stop serving:
+/// the worst a poisoned meter costs is a skewed window.
+fn lock(meter: &SharedMeter) -> std::sync::MutexGuard<'_, TrafficMeter> {
+    meter.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Queue and deadline settings for one dispatcher.
 #[derive(Debug, Clone, Copy)]
 pub struct DispatcherConfig {
@@ -35,6 +46,32 @@ pub struct DispatcherConfig {
     pub queue_timeout: Duration,
     /// How many recent batches the traffic averages cover.
     pub sample_window: usize,
+    /// Batches of this model that may be executing at the same time.
+    ///
+    /// Note what this is not: the dispatcher pipelines whatever this is set
+    /// to, because it forms the next batch while the current one runs rather
+    /// than afterwards. This governs how many may be *running*.
+    ///
+    /// One, and measured rather than assumed. More than one execution of the
+    /// same model cannot actually proceed in parallel, because ONNX
+    /// Runtime's `Run` is not thread-safe -- `ort` makes `Session::run` take
+    /// `&mut self` for exactly that reason -- so a session sits behind a
+    /// mutex and the second execution waits on it. Raising this therefore
+    /// buys nothing and costs something: the waiting happens on a blocking
+    /// thread, which is a thread another model could have been using.
+    /// Measured on a small CNN, raising it to four cost about a fifth of the
+    /// throughput.
+    ///
+    /// What does make one model use several cores is `--intra-op-threads`,
+    /// which parallelises *inside* one execution: on a 256x256 generator,
+    /// one thread gave 200 requests a second over 1.2 cores and eight gave
+    /// 354 over 3.3.
+    ///
+    /// The setting stays because the serialisation is the backend's and not
+    /// the dispatcher's: a backend that can run concurrently -- a session
+    /// pool, or a runtime whose calls are thread-safe -- makes this the knob
+    /// that uses it, and the executions are already spawned to allow for it.
+    pub max_concurrent_batches: usize,
 }
 
 impl Default for DispatcherConfig {
@@ -43,6 +80,7 @@ impl Default for DispatcherConfig {
             queue_capacity: 1_024,
             queue_timeout: Duration::from_secs(10),
             sample_window: 64,
+            max_concurrent_batches: 1,
         }
     }
 }
@@ -198,11 +236,29 @@ async fn run(
     config: DispatcherConfig,
     metrics: Arc<DispatcherMetrics>,
 ) {
-    let mut meter = TrafficMeter::new(config.sample_window);
+    // Shared because a batch's duration is recorded by the task that ran it,
+    // which outlives the iteration that formed it. A std mutex rather than an
+    // async one: nothing awaits while holding it.
+    let meter = Arc::new(std::sync::Mutex::new(TrafficMeter::new(
+        config.sample_window,
+    )));
+
+    // What bounds this model's concurrency. Held for the length of an
+    // execution, so acquiring one is how the loop waits for a slot.
+    let slots = Arc::new(tokio::sync::Semaphore::new(
+        config.max_concurrent_batches.max(1),
+    ));
+    // Executions in flight, so the dispatcher can be stopped without cutting
+    // a batch off halfway.
+    let mut running: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     while let Some(first) = receiver.recv().await {
-        meter.record_arrival(clock.now_millis());
+        lock(&meter).record_arrival(clock.now_millis());
         let mut batch = vec![first];
+
+        // Finished executions are reaped here rather than in a separate task:
+        // the set is small and this is the only loop that touches it.
+        while running.try_join_next().is_some() {}
 
         // The backend is needed before the batch is sized: its metadata says
         // how large a batch the model permits and whether it can batch at all.
@@ -215,20 +271,12 @@ async fn run(
         };
         let model_max = backend.metadata().max_batch_size.unwrap_or(1).max(1);
 
-        let stats = meter.stats(receiver.len(), model_max);
+        let stats = lock(&meter).stats(receiver.len(), model_max);
         let max_batch = policy.max_batch(&stats).max(1);
         let window = policy.window(&stats);
         trace!(model = %key, ?window, max_batch, queue = receiver.len(), "collecting batch");
 
-        collect(
-            &mut receiver,
-            &mut batch,
-            max_batch,
-            window,
-            &mut meter,
-            &clock,
-        )
-        .await;
+        collect(&mut receiver, &mut batch, max_batch, window, &meter, &clock).await;
 
         let kept = drop_expired(batch, &clock, config.queue_timeout, &metrics);
 
@@ -249,10 +297,35 @@ async fn run(
             continue;
         }
 
-        let rows = execute(&key, kept, backend, &metrics).await;
-        meter.record_batch(rows.0, rows.1);
+        // The slot is taken here, after the batch is formed, which is what
+        // pipelines the two halves of the work: while a batch executes, this
+        // loop is already waiting on the channel and running the next
+        // batch's window, so the window is paid in parallel with the
+        // execution instead of after it. The wait for a slot is bounded by
+        // one execution.
+        let slot = match Arc::clone(&slots).acquire_owned().await {
+            Ok(slot) => slot,
+            // The semaphore is never closed while the loop runs; if it were,
+            // there would be nothing to execute on.
+            Err(_) => return,
+        };
+
+        // Spawned rather than awaited, which is the other half of the point:
+        // the loop returns to the channel immediately. The slot moves into
+        // the task and is released when it ends, however it ends.
+        let task_key = key.clone();
+        let task_metrics = Arc::clone(&metrics);
+        let task_meter = Arc::clone(&meter);
+        running.spawn(async move {
+            let (rows, elapsed) = execute(&task_key, kept, backend, &task_metrics).await;
+            lock(&task_meter).record_batch(rows, elapsed);
+            drop(slot);
+        });
     }
 
+    // The channel is closed, so no further requests can arrive; what is
+    // already running is still owed an answer.
+    while running.join_next().await.is_some() {}
     debug!(model = %key, "dispatcher stopped");
 }
 
@@ -262,14 +335,14 @@ async fn collect(
     batch: &mut Vec<Job>,
     max_batch: usize,
     window: Duration,
-    meter: &mut TrafficMeter,
+    meter: &SharedMeter,
     clock: &Arc<dyn Clock>,
 ) {
     // Whatever is already queued costs nothing to take.
     while batch.len() < max_batch {
         match receiver.try_recv() {
             Ok(job) => {
-                meter.record_arrival(clock.now_millis());
+                lock(meter).record_arrival(clock.now_millis());
                 batch.push(job);
             }
             Err(_) => break,
@@ -284,7 +357,7 @@ async fn collect(
     while batch.len() < max_batch {
         match tokio::time::timeout_at(deadline.into(), receiver.recv()).await {
             Ok(Some(job)) => {
-                meter.record_arrival(clock.now_millis());
+                lock(meter).record_arrival(clock.now_millis());
                 batch.push(job);
             }
             // The channel closed: no more requests will ever arrive.

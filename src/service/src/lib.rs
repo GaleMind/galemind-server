@@ -10,6 +10,7 @@
 
 mod builder;
 mod listener;
+mod memory;
 mod metrics;
 mod registry;
 mod resources;
@@ -18,8 +19,10 @@ mod service;
 
 pub use builder::{ingest_repository, ServiceBuilder};
 pub use listener::{bind_with_backlog, DEFAULT_LISTEN_BACKLOG};
+pub use memory::{AllocatorReclaim, MemoryGuard, MemoryGuardConfig, NoReclaim, Reclaim, Reclaimed};
 pub use metrics::{
-    render_prometheus, FailureReason, MetricsRegistry, ModelMetricsSnapshot, PrometheusReport,
+    render_prometheus, FailureReason, MemoryReclaimStats, MetricsRegistry, ModelMetricsSnapshot,
+    PrometheusReport,
 };
 pub use registry::ModelRegistry;
 pub use resources::{ResourceSampler, ResourceSnapshot};

@@ -42,6 +42,9 @@ pub struct InferenceService {
     /// The newest resource reading. Utilisation is a rate, so it is sampled on
     /// an interval rather than computed inside a metrics scrape.
     latest_resources: RwLock<ResourceSnapshot>,
+    /// The memory high-water guard, when one is configured, so that what it
+    /// has done can be reported.
+    memory_guard: Option<Arc<crate::MemoryGuard>>,
 }
 
 impl InferenceService {
@@ -66,6 +69,7 @@ impl InferenceService {
             resources: ResourceSampler::new(),
             runtime: RuntimeInfo::detected(),
             latest_resources: RwLock::new(ResourceSnapshot::default()),
+            memory_guard: None,
         }
     }
 
@@ -75,6 +79,15 @@ impl InferenceService {
     /// Taken by value at startup rather than detected here: only the binary
     /// knows how many worker threads it asked the runtime for and what it
     /// configured the backend with.
+    /// Gives the service the guard whose counters it should publish.
+    ///
+    /// The guard runs in the binary, which owns the allocator it talks to;
+    /// the service only reads what it has done, so that `/metrics` can
+    /// report it beside the memory readings it already has.
+    pub fn set_memory_guard(&mut self, guard: Arc<crate::MemoryGuard>) {
+        self.memory_guard = Some(guard);
+    }
+
     pub fn set_runtime_info(&mut self, runtime: RuntimeInfo) {
         self.runtime = runtime;
     }
@@ -128,6 +141,14 @@ impl InferenceService {
             cache: self.cache.stats(),
             resources: self.resources().await,
             loaded_models: self.registry.keys().await.len(),
+            memory: self
+                .memory_guard
+                .as_ref()
+                .map(|guard| crate::MemoryReclaimStats {
+                    high_water_bytes: guard.high_water_bytes(),
+                    reclaims: guard.reclaim_count(),
+                    unloads: guard.unload_count(),
+                }),
         }
     }
 
@@ -170,6 +191,20 @@ impl InferenceService {
     /// Evicts models that have outlived their time-to-live.
     pub async fn sweep_cache(&self) -> usize {
         self.cache.sweep().await
+    }
+
+    /// Unloads every model the cache holds, returning how many went.
+    ///
+    /// Not an eviction policy -- the cache's capacity and time-to-live are
+    /// that -- but the last thing a server over a memory limit can give up.
+    /// The dispatchers are left running: they are cheap, and a reloaded model
+    /// finds its queue where it left it.
+    pub async fn unload_all(&self) -> usize {
+        let keys = self.cache.loaded_keys();
+        for key in &keys {
+            self.cache.invalidate(key).await;
+        }
+        keys.len()
     }
 
     /// Stops every dispatcher, letting queued requests finish first.

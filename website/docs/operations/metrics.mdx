@@ -71,6 +71,9 @@ A failure that never resolved to a model is counted with empty labels.
 | `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
 | `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
 | `gm_server_allocator` | `system` or `jemalloc`; whether an idle server returns memory |
+| `gm_memory_high_water_bytes` | The mark above which the server reclaims, or 0 when off |
+| `gm_memory_reclaim_count` | Times it has gone over and reclaimed |
+| `gm_memory_reclaim_unload_count` | Times a reclaim was not enough and the models went too |
 
 Utilisation is a rate, so it is sampled on `--metrics-interval-ms` rather than
 computed during a scrape. Counters are cumulative and never reset.

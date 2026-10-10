@@ -261,6 +261,9 @@ request will pay for a load.
 | `--max-batch-window-micros` | `GALEMIND_MAX_BATCH_WINDOW_MICROS` | `5000` | Longest wait; caps the latency batching adds |
 | `--queue-capacity` | `GALEMIND_QUEUE_CAPACITY` | `1024` | Requests that may wait **per model** before the server reports itself overloaded |
 | `--queue-timeout-secs` | `GALEMIND_QUEUE_TIMEOUT_SECS` | `10` | Fail a request that waited this long rather than run it late |
+| `--max-concurrent-batches` | `GALEMIND_MAX_CONCURRENT_BATCHES` | `1` | Batches of one model that may be executing at once; see [One model, several cores](#one-model-several-cores) |
+| `--memory-high-water-mb` | `GALEMIND_MEMORY_HIGH_WATER_MB` | `500` | Resident megabytes above which the server reclaims |
+| `--memory-reclaim-cooldown-secs` | `GALEMIND_MEMORY_RECLAIM_COOLDOWN_SECS` | `30` | Wait this long before reclaiming again |
 | `--allow-metrics` | `GALEMIND_ALLOW_METRICS` | `true` | Serve `/metrics` |
 | `--metrics-interval-ms` | `GALEMIND_METRICS_INTERVAL_MS` | `1000` | How often CPU and memory are re-read |
 
@@ -784,6 +787,9 @@ A failure that never resolved to a model is counted with empty labels.
 | `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
 | `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
 | `gm_server_allocator` | `system` or `jemalloc`; whether an idle server returns memory |
+| `gm_memory_high_water_bytes` | The mark above which the server reclaims, or 0 when off |
+| `gm_memory_reclaim_count` | Times it has gone over and reclaimed |
+| `gm_memory_reclaim_unload_count` | Times a reclaim was not enough and the models went too |
 
 Utilisation is a rate, so it is sampled on `--metrics-interval-ms` rather than
 computed during a scrape. Counters are cumulative and never reset.
@@ -814,6 +820,51 @@ A server with one large model and spare cores is the opposite case and wants
 `config.json`. `--parallel-execution` additionally runs independent branches
 of a graph at once, which is worth it for a wide graph such as a large
 ensemble and pointless for a deep chain.
+
+### One model, several cores
+
+The dispatcher pipelines: it forms the next batch while the current one is
+executing, rather than waiting for the execution to finish and then opening a
+batch window. The window is therefore paid in parallel with the work instead
+of after it, which measured about 5% on a small CNN (13 180 against 12 350
+requests a second, repeatable).
+
+What it does not do is run two batches of the same model at once, and
+`--max-concurrent-batches` defaults to 1 for a reason worth knowing:
+**ONNX Runtime's `Run` is not thread-safe.** The `ort` crate makes
+`Session::run` take `&mut self` precisely to prevent it, with a comment in
+its source that is unusually direct on the subject, so a session sits behind
+a mutex and a second execution of the same model only waits on it -- while
+holding a blocking thread another model could have used. Measured, raising it
+to four cost about a fifth of the throughput and nothing else.
+
+So the parallelism for one model is **inside** one execution, which is
+`--intra-op-threads`. On the 256x256 generator at concurrency 4, over gRPC so
+that JSON encoding is not what is being measured:
+
+| `--intra-op-threads` | Cores used | Throughput |
+|---|---|---|
+| 1 | 1.2 | 200 req/s |
+| 2 | 2.0 | 319 req/s |
+| 4 | 2.6 | 341 req/s |
+| 8 | 3.3 | 354 req/s |
+
+Cores used is the process' own CPU time over the wall time of the run, not a
+sampled utilisation. The gain flattens because the graph has limited
+parallelism and is partly memory-bandwidth bound, which is the normal shape
+for convolutions on a CPU.
+
+The rule that follows: **many models, one operator thread each; one model,
+several.** A repository of ten small models wants the default, where the
+parallelism comes from serving them side by side. A server with one heavy
+model wants `--intra-op-threads` raised, or `intra_op_threads` set in that
+model's `config.json` so only it pays.
+
+`--max-concurrent-batches` stays because the serialisation belongs to the
+backend rather than to the dispatcher: a backend that can run a model
+concurrently -- a pool of sessions, or a runtime whose calls are thread-safe
+-- makes it the knob that uses it, and executions are already spawned to
+allow for it.
 
 The plan is logged at startup and published in the metrics:
 
@@ -1023,6 +1074,60 @@ There is deliberately no "free everything now" call. Returning pages costs
 page faults when the work comes back, which is why both allocators are built
 to wait a while first, and a server that does it after every execution pays
 that cost on every request.
+
+### The high-water mark
+
+Everything above is about why memory is what it is, and how it comes back on
+its own. A deployment with a memory limit wants neither explanation: it wants
+a number not to be exceeded. So there is one, `--memory-high-water-mb`,
+default 500.
+
+Above the mark the server reclaims, cheapest first:
+
+1. **Asks the allocator for its retained pages.** Nothing is lost -- these
+   are pages already freed -- and the models stay loaded, so the next request
+   is answered as fast as the last.
+2. **Unloads the models**, only if that was not enough. This does lose
+   something: each model's next request pays its load again.
+
+```bash
+galemind serve --memory-high-water-mb 500 --memory-reclaim-cooldown-secs 30
+```
+
+Driving a 256x256 generator at concurrency 64 with sixteen rows a request,
+against a mark of 500 MB:
+
+```text
+t= 4s  rss  424 MiB  reclaims 0  unloads 0
+t=12s  rss  442 MiB  reclaims 0  unloads 0
+t=14s  rss  503 MiB  reclaims 1  unloads 0
+t=16s  rss  452 MiB  reclaims 1  unloads 0
+t=20s  rss  307 MiB  reclaims 1  unloads 0
+```
+
+```text
+INFO galemind_service::memory: reclaimed memory allocator="jemalloc"
+     before_mb=503 after_mb=332 returned_mb=170 mark_mb=500
+```
+
+170 MB handed back at the mark, with every model still loaded and nothing
+refused. The cooldown is what keeps a server whose steady state is near the
+mark from purging on every sample and faulting the same pages straight back
+in; `gm_memory_high_water_bytes`, `gm_memory_reclaim_count` and
+`gm_memory_reclaim_unload_count` are the series to watch, and a rising unload
+count means the mark is below this server's working set rather than that the
+guard is doing its job.
+
+Two honest limits. The guard samples every two seconds, so a spike that comes
+and goes between samples is recorded by `gm_memory_peak_bytes` and not acted
+on -- it is a limit on sustained memory, not a ceiling the kernel enforces.
+And a purge can only return memory that is *free*: under sustained load
+jemalloc sometimes returns nothing because the memory is in use, and the log
+says so in those words rather than claiming success. The lever then is the
+size of an execution, not the allocator.
+
+Set `--memory-high-water-mb 0` to turn it off, which is right for a server
+whose memory is already bounded by its cache and its batch size.
 
 ### How to tell a leak from retention
 

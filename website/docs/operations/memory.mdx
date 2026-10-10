@@ -257,6 +257,60 @@ page faults when the work comes back, which is why both allocators are built
 to wait a while first, and a server that does it after every execution pays
 that cost on every request.
 
+## The high-water mark
+
+Everything above is about why memory is what it is, and how it comes back on
+its own. A deployment with a memory limit wants neither explanation: it wants
+a number not to be exceeded. So there is one, `--memory-high-water-mb`,
+default 500.
+
+Above the mark the server reclaims, cheapest first:
+
+1. **Asks the allocator for its retained pages.** Nothing is lost — these
+   are pages already freed — and the models stay loaded, so the next request
+   is answered as fast as the last.
+2. **Unloads the models**, only if that was not enough. This does lose
+   something: each model's next request pays its load again.
+
+```bash
+galemind serve --memory-high-water-mb 500 --memory-reclaim-cooldown-secs 30
+```
+
+Driving a 256x256 generator at concurrency 64 with sixteen rows a request,
+against a mark of 500 MB:
+
+```text
+t= 4s  rss  424 MiB  reclaims 0  unloads 0
+t=12s  rss  442 MiB  reclaims 0  unloads 0
+t=14s  rss  503 MiB  reclaims 1  unloads 0
+t=16s  rss  452 MiB  reclaims 1  unloads 0
+t=20s  rss  307 MiB  reclaims 1  unloads 0
+```
+
+```text
+INFO galemind_service::memory: reclaimed memory allocator="jemalloc"
+     before_mb=503 after_mb=332 returned_mb=170 mark_mb=500
+```
+
+170 MB handed back at the mark, with every model still loaded and nothing
+refused. The cooldown is what keeps a server whose steady state is near the
+mark from purging on every sample and faulting the same pages straight back
+in; `gm_memory_high_water_bytes`, `gm_memory_reclaim_count` and
+`gm_memory_reclaim_unload_count` are the series to watch, and a rising unload
+count means the mark is below this server's working set rather than that the
+guard is doing its job.
+
+Two honest limits. The guard samples every two seconds, so a spike that comes
+and goes between samples is recorded by `gm_memory_peak_bytes` and not acted
+on — it is a limit on sustained memory, not a ceiling the kernel enforces.
+And a purge can only return memory that is *free*: under sustained load
+jemalloc sometimes returns nothing because the memory is in use, and the log
+says so in those words rather than claiming success. The lever then is the
+size of an execution, not the allocator.
+
+Set `--memory-high-water-mb 0` to turn it off, which is right for a server
+whose memory is already bounded by its cache and its batch size.
+
 ## The diagnosis recipe
 
 ```bash

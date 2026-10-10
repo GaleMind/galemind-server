@@ -40,6 +40,9 @@ services:
       # net.core.somaxconn on the host has no effect, since the kernel caps
       # what it is asked for; see the README's load-testing section.
       GALEMIND_LISTEN_BACKLOG: "4096"
+      # Reclaim above this, which for a container is usually a little under
+      # whatever the orchestrator will kill it at.
+      GALEMIND_MEMORY_HIGH_WATER_MB: "500"
       # jemalloc's reclaim window, read before main runs. Pages unused for
       # this long go back to the kernel, which is what makes an idle server's
       # resident memory fall; the image is built with the jemalloc feature.

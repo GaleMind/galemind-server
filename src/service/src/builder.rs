@@ -30,6 +30,7 @@ pub struct ServiceBuilder {
     cache_config: LruTtlConfig,
     dispatcher_config: DispatcherConfig,
     runtime: Option<RuntimeInfo>,
+    memory_guard: Option<Arc<crate::MemoryGuard>>,
 }
 
 impl ServiceBuilder {
@@ -43,6 +44,7 @@ impl ServiceBuilder {
             cache_config: LruTtlConfig::default(),
             dispatcher_config: DispatcherConfig::default(),
             runtime: None,
+            memory_guard: None,
         }
     }
 
@@ -89,6 +91,12 @@ impl ServiceBuilder {
         self
     }
 
+    /// Gives the built service the memory guard whose counters it publishes.
+    pub fn with_memory_guard(mut self, guard: Arc<crate::MemoryGuard>) -> Self {
+        self.memory_guard = Some(guard);
+        self
+    }
+
     pub fn build(self) -> Result<Arc<InferenceService>> {
         if self.backends.is_empty() {
             return Err(InferError::Internal(
@@ -130,6 +138,9 @@ impl ServiceBuilder {
         );
         if let Some(runtime) = self.runtime {
             service.set_runtime_info(runtime);
+        }
+        if let Some(guard) = self.memory_guard {
+            service.set_memory_guard(guard);
         }
         Ok(Arc::new(service))
     }

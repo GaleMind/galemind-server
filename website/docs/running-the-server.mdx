@@ -52,6 +52,9 @@ dropped connections.
 | `--max-batch-window-micros` | `GALEMIND_MAX_BATCH_WINDOW_MICROS` | `5000` | Longest wait; caps the latency batching adds |
 | `--queue-capacity` | `GALEMIND_QUEUE_CAPACITY` | `1024` | Requests that may wait **per model** before the server reports itself overloaded |
 | `--queue-timeout-secs` | `GALEMIND_QUEUE_TIMEOUT_SECS` | `10` | Fail a request that waited this long rather than run it late |
+| `--max-concurrent-batches` | `GALEMIND_MAX_CONCURRENT_BATCHES` | `1` | Batches of one model that may be executing at once; see [One model, several cores](./operations/threads.mdx#one-model-several-cores) |
+| `--memory-high-water-mb` | `GALEMIND_MEMORY_HIGH_WATER_MB` | `500` | Resident megabytes above which the server reclaims; see [the high-water mark](./operations/memory.mdx#the-high-water-mark) |
+| `--memory-reclaim-cooldown-secs` | `GALEMIND_MEMORY_RECLAIM_COOLDOWN_SECS` | `30` | Wait this long before reclaiming again |
 | `--allow-metrics` | `GALEMIND_ALLOW_METRICS` | `true` | Serve `/metrics` |
 | `--metrics-interval-ms` | `GALEMIND_METRICS_INTERVAL_MS` | `1000` | How often CPU and memory are re-read |
 
