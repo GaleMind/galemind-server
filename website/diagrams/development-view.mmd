@@ -1,0 +1,43 @@
+%% The development view: the workspace, and which crate may depend on which.
+%% Everything points inwards, so the domain depends on nothing.
+graph TB
+    BIN["src/galemind<br/>the binary: CLI, runtime, allocator"]
+    REST["src/rest_server"]
+    GRPC["src/grpc_server"]
+    SVC["src/service"]
+    BATCH["src/batching"]
+    CACHE["src/cache"]
+    STORE["src/store"]
+    ONNX["src/onnx"]
+    CORE["src/core<br/>the domain, no I/O"]
+    CLIENT["src/client/rust<br/>library + gmctl"]
+    PY["src/client/python"]
+    E2E["src/e2e<br/>its own workspace"]
+
+    BIN --> REST
+    BIN --> GRPC
+    BIN --> SVC
+    BIN --> ONNX
+    BIN --> STORE
+    REST --> SVC
+    GRPC --> SVC
+    SVC --> BATCH
+    SVC --> CACHE
+    SVC --> STORE
+    BATCH --> CORE
+    CACHE --> CORE
+    STORE --> CORE
+    ONNX --> CORE
+    REST --> CORE
+    GRPC --> CORE
+    SVC --> CORE
+    CLIENT --> CORE
+    CLIENT --> GRPC
+    E2E --> CLIENT
+
+    classDef domain fill:#e8f0f8,stroke:#2a6fa8,stroke-width:2px,color:#1d4d75;
+    classDef crate fill:#ffffff,stroke:#8aa4bb,color:#20303d;
+    classDef outside fill:#f6f7f9,stroke:#b8c3cf,stroke-dasharray:4 3,color:#20303d;
+    class CORE domain;
+    class BIN,REST,GRPC,SVC,BATCH,CACHE,STORE,ONNX,CLIENT crate;
+    class PY,E2E outside;

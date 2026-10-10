@@ -46,3 +46,32 @@
 .markdown table td code {
   white-space: nowrap;
 }
+
+/* Architecture diagrams. They are rendered from Mermaid at a fixed size and
+   are wider than a page, so the figure scrolls rather than shrinking the
+   text to nothing; and they are drawn for a light background, so the figure
+   carries one in both colour modes rather than being rendered twice. */
+.diagram {
+  margin: 0 0 1.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+  background: #fdfdfd;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-card-border-radius, 8px);
+}
+
+.diagram img {
+  display: block;
+  max-width: none;
+  height: auto;
+}
+
+.diagram figcaption {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+[data-theme='dark'] .diagram figcaption {
+  color: var(--ifm-color-emphasis-600);
+}

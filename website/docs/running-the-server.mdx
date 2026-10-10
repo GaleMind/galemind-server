@@ -74,10 +74,23 @@ measure throughput. See [Load testing](./operations/load-testing.mdx).
 
 ## Threads and memory
 
-`--worker-threads`, `--blocking-threads`, `--intra-op-threads`,
-`--parallel-execution`, `--inter-op-threads` and `--cpu-mem-arena` are
-explained where they can be explained properly: [Using the
-cores](./operations/threads.mdx) and [Memory](./operations/memory.mdx).
+| Option | Variable | Default | |
+|---|---|---|---|
+| `--worker-threads` | `GALEMIND_WORKER_THREADS` | one per core | Async workers; they decode, queue, encode and reply |
+| `--blocking-threads` | `GALEMIND_BLOCKING_THREADS` | twice the cores | Where model code runs; bounds concurrent executions |
+| `--intra-op-threads` | `GALEMIND_INTRA_OP_THREADS` | **derived** | Threads inside one operator, per loaded model |
+| `--inter-op-threads` | `GALEMIND_INTER_OP_THREADS` | `0` | Threads across independent branches of a graph |
+| `--parallel-execution` | `GALEMIND_PARALLEL_EXECUTION` | off | Run independent branches at once; for wide graphs |
+| `--cpu-mem-arena` | `GALEMIND_CPU_MEM_ARENA` | off | ONNX Runtime's arena allocator |
+| `--memory-high-water-mb` | `GALEMIND_MEMORY_HIGH_WATER_MB` | `500` | Reclaim above this |
+| `--memory-reclaim-cooldown-secs` | `GALEMIND_MEMORY_RECLAIM_COOLDOWN_SECS` | `30` | Wait before reclaiming again |
+
+The operator-thread default is derived from the machine and the repository —
+the cores divided between the models that can be loaded at once, up to half
+the machine — which on a twelve-core host is six threads for one model and
+one for ten. Both ends of that are measured in [Using the
+cores](./operations/threads.mdx#operator-threads-are-derived-from-the-machine);
+[Memory](./operations/memory.mdx) covers the rest.
 
 ## Authentication
 

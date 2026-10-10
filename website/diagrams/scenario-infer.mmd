@@ -1,0 +1,39 @@
+%% The +1: one inference, from the socket to the answer, with the decisions
+%% that can end it early.
+sequenceDiagram
+    autonumber
+    participant C as Caller
+    participant T as trace middleware
+    participant A as Authenticator
+    participant S as InferenceService
+    participant K as Model cache
+    participant D as Dispatcher
+    participant B as ONNX session
+
+    C->>T: POST /v2/models/thermal_cnn/infer
+    T->>T: id from X-Request-Id, or minted
+    T->>A: Authorization header
+    alt health or metrics
+        A-->>T: open, no credential needed
+    else bad or missing token
+        A-->>C: 401 + WWW-Authenticate
+    end
+    T->>S: InferRequest, inside the request span
+    S->>S: resolve version, validate against metadata
+    S->>K: get(thermal_cnn/1)
+    alt not loaded
+        K->>B: build session once, reuse after
+    end
+    S->>D: submit
+    alt queue full
+        D-->>C: 503 overloaded
+    else waited past the timeout
+        D-->>C: 504
+    end
+    D->>D: merge requests up to --max-batch-size
+    D->>B: run on a blocking thread
+    B-->>D: rows
+    D->>D: split rows back per caller
+    D-->>S: this caller's rows only
+    S-->>T: InferResponse
+    T-->>C: 200, X-Request-Id echoed

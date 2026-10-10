@@ -5,6 +5,8 @@ sidebar_position: 9
 description: A workspace of small crates, each depending on behaviour rather than on a framework.
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Architecture
 
 A workspace of small crates, each depending on behaviour rather than on a
@@ -53,3 +55,108 @@ from `cargo build`; that moved bindgen's fingerprint, and with it the
 `librocksdb-sys` build script's, recompiling 330 C++ translation units on
 every alternation between the two. The cost of the split is a separate
 `src/e2e/target` and dependency versions kept in step by hand.
+
+## The 4+1 views
+
+Five diagrams, in Kruchten's arrangement: four views of the same server, and
+the scenarios that tie them together. They are rendered from the Mermaid
+sources in `website/diagrams/`, so a change to the architecture is a change to
+a text file and a re-render rather than a redrawing:
+
+```bash
+cd website
+npx @mermaid-js/mermaid-cli -i diagrams/logical-view.mmd \
+  -o static/img/views/logical-view.svg -b transparent
+```
+
+Each diagram is wider than a page; click one to open it at full size.
+
+### Logical view — what the pieces are
+
+The arrows all point inwards, at traits in a crate that does no I/O. That is
+the whole structural claim of this server: a transport depends on
+`Inference`, not on a service; the cache depends on `Backend`, not on ONNX
+Runtime; and every box outside the domain is replaceable without touching the
+ones beside it.
+
+<figure className="diagram">
+  <a href={useBaseUrl('/img/views/logical-view.svg')} target="_blank" rel="noopener">
+    <img src={useBaseUrl('/img/views/logical-view.svg')}
+         alt="Transports depend on Inference, Authenticator and MetricsSource; the service implements Inference and uses the batching and cache crates; the cache depends on Backend and ModelStore, which the ONNX backend and the two stores implement." />
+  </a>
+  <figcaption>Logical view: transports, domain traits, orchestration, adapters.</figcaption>
+</figure>
+
+### Process view — what runs at once
+
+The same picture in motion, and the one that explains the flags. Requests are
+decoded on async workers, wait in a per-model queue, are merged by that
+model's dispatcher, and execute on a blocking thread inside a session that
+runs one batch at a time. Three background tasks watch the rest: the cache
+sweeper, the resource sampler and the memory guard.
+
+<figure className="diagram">
+  <a href={useBaseUrl('/img/views/process-view.svg')} target="_blank" rel="noopener">
+    <img src={useBaseUrl('/img/views/process-view.svg')}
+         alt="Clients arrive at the kernel accept queue, then async workers, a per-model queue, a dispatcher, the blocking pool and an ONNX session; a cache sweeper, memory guard and resource sampler run alongside." />
+  </a>
+  <figcaption>Process view: the threads and tasks, with the flags that bound each.</figcaption>
+</figure>
+
+### Development view — the workspace
+
+Which crate may depend on which. `src/core` has no dependency on anything in
+the workspace, which is what makes it testable without a runtime; `src/e2e`
+is outside the workspace entirely, for the feature-unification reason
+[below](#why-the-end-to-end-suite-is-a-separate-workspace).
+
+<figure className="diagram">
+  <a href={useBaseUrl('/img/views/development-view.svg')} target="_blank" rel="noopener">
+    <img src={useBaseUrl('/img/views/development-view.svg')}
+         alt="The binary depends on the transports, service, ONNX backend and store crates; all of them depend on core; the client library depends on core and the gRPC crate; the end-to-end suite sits outside the workspace." />
+  </a>
+  <figcaption>Development view: the crates, and the direction dependencies run.</figcaption>
+</figure>
+
+### Physical view — where it runs
+
+One container, one process, two ports. Everything an operator needs on the
+HTTP port — the protocol, the catalogue, health and `/metrics` — and the
+protocol again on the gRPC port. Health and metrics are reachable without a
+credential by design, so probes and scrapes survive turning authentication
+on.
+
+<figure className="diagram">
+  <a href={useBaseUrl('/img/views/physical-view.svg')} target="_blank" rel="noopener">
+    <img src={useBaseUrl('/img/views/physical-view.svg')}
+         alt="Applications, gmctl, Prometheus and orchestrator probes reach ports 8000 and 8001 of one container, which serves from a baked-in model directory and a RocksDB volume." />
+  </a>
+  <figcaption>Physical view: one container, two ports, and who talks to them.</figcaption>
+</figure>
+
+### Scenarios — the +1
+
+Two walks through the whole stack, which is what the four views are for. The
+first is an inference, including every way it can end early: an open
+endpoint, a refused credential, a full queue, a timed-out wait.
+
+<figure className="diagram">
+  <a href={useBaseUrl('/img/views/scenario-infer.svg')} target="_blank" rel="noopener">
+    <img src={useBaseUrl('/img/views/scenario-infer.svg')}
+         alt="A sequence from caller through the tracing middleware, authenticator, service, cache, dispatcher and ONNX session, with branches for open endpoints, refused tokens, a full queue and a queue timeout." />
+  </a>
+  <figcaption>Scenario: one inference, from socket to answer.</figcaption>
+</figure>
+
+The second is the memory guard crossing its mark, which touches the
+allocator, the cache and the metrics, and is the clearest example of a
+decision split between a component that can measure and a caller that can
+act.
+
+<figure className="diagram">
+  <a href={useBaseUrl('/img/views/scenario-memory.svg')} target="_blank" rel="noopener">
+    <img src={useBaseUrl('/img/views/scenario-memory.svg')}
+         alt="A sequence where the memory guard reads resident memory every two seconds, checks the mark and the cooldown, asks the allocator to return pages, and unloads the models only if the process is still over." />
+  </a>
+  <figcaption>Scenario: resident memory crosses the high-water mark.</figcaption>
+</figure>

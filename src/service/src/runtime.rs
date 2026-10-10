@@ -24,6 +24,16 @@ pub struct RuntimeInfo {
     pub blocking_threads: usize,
     /// Threads ONNX Runtime may use inside one operator, per session.
     pub intra_op_threads: usize,
+    /// Model versions that can be in memory at once: the smaller of the
+    /// cache's capacity and what the repository holds.
+    ///
+    /// Part of the thread plan because operator threads belong to a session,
+    /// so this is what they multiply against -- and because one model's
+    /// executions cannot overlap (ONNX Runtime's `Run` is not thread-safe),
+    /// it also bounds how many executions can be in flight at once. Zero
+    /// where it is not known, which is what a default [`RuntimeInfo`]
+    /// reports.
+    pub loadable_models: usize,
     /// Whether ONNX Runtime's CPU arena allocator is in use.
     pub cpu_mem_arena: bool,
     /// `MALLOC_ARENA_MAX`, when the environment sets it.
@@ -75,6 +85,7 @@ impl RuntimeInfo {
             worker_threads: cpu_count,
             blocking_threads: (cpu_count * 2).max(4),
             intra_op_threads: 1,
+            loadable_models: 0,
             cpu_mem_arena: false,
             malloc_arena_max: malloc_arena_max(),
             allocator: SYSTEM_ALLOCATOR,
@@ -85,12 +96,23 @@ impl RuntimeInfo {
     ///
     /// Model code does not run on the async workers: a batch is handed to the
     /// blocking pool, and ONNX Runtime may use `intra_op_threads` inside it.
-    /// So this is the blocking pool times the operator threads, and comparing
-    /// it with `cpu_count` is what says whether the machine is
-    /// oversubscribed. It is an upper bound, reached only when every blocking
-    /// thread is executing a batch at once.
+    /// So this is the executions that can be in flight times the operator
+    /// threads each may use, and comparing it with `cpu_count` is what says
+    /// whether the machine is oversubscribed.
+    ///
+    /// The executions in flight are bounded by the blocking pool *and* by
+    /// how many models can be loaded, because ONNX Runtime's `Run` is not
+    /// thread-safe: a session runs one batch at a time, so ten loaded models
+    /// cannot have eleven executions between them however many blocking
+    /// threads there are. Reporting the pool alone said 144 threads for a
+    /// server with one model and six operator threads, which could use six.
     pub fn compute_threads(&self) -> usize {
-        self.blocking_threads * self.intra_op_threads.max(1)
+        let executions = match self.loadable_models {
+            // Unknown: the blocking pool is then the only bound there is.
+            0 => self.blocking_threads,
+            models => models.min(self.blocking_threads),
+        };
+        executions * self.intra_op_threads.max(1)
     }
 }
 
@@ -125,6 +147,46 @@ pub fn platform() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the formula is for, stated as a test: a thread plan that cannot
+    /// be reached should not be reported as if it could.
+    #[test]
+    fn the_compute_ceiling_counts_executions_rather_than_threads() {
+        let one_model = RuntimeInfo {
+            blocking_threads: 24,
+            intra_op_threads: 6,
+            loadable_models: 1,
+            ..RuntimeInfo::detected()
+        };
+        // One model runs one batch at a time, so six threads, not 144.
+        assert_eq!(one_model.compute_threads(), 6);
+
+        let zoo = RuntimeInfo {
+            blocking_threads: 24,
+            intra_op_threads: 1,
+            loadable_models: 11,
+            ..RuntimeInfo::detected()
+        };
+        assert_eq!(zoo.compute_threads(), 11);
+
+        // More models than blocking threads: the pool is the bound again.
+        let many = RuntimeInfo {
+            blocking_threads: 4,
+            intra_op_threads: 2,
+            loadable_models: 100,
+            ..RuntimeInfo::detected()
+        };
+        assert_eq!(many.compute_threads(), 8);
+
+        // Unknown, which is what a bare report says: the pool alone.
+        let unknown = RuntimeInfo {
+            blocking_threads: 8,
+            intra_op_threads: 2,
+            loadable_models: 0,
+            ..RuntimeInfo::detected()
+        };
+        assert_eq!(unknown.compute_threads(), 16);
+    }
 
     /// The allocator has to be reported, because it is what decides whether
     /// an idle server's memory comes back -- and it has to come from whoever

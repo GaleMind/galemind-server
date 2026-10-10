@@ -279,6 +279,25 @@ is happening.
 you wanted if you were trying to measure throughput. See [Load
 testing](#load-testing).
 
+### Threads and memory
+
+| Option | Variable | Default | |
+|---|---|---|---|
+| `--worker-threads` | `GALEMIND_WORKER_THREADS` | one per core | Async workers; they decode, queue, encode and reply |
+| `--blocking-threads` | `GALEMIND_BLOCKING_THREADS` | twice the cores | Where model code runs; bounds concurrent executions |
+| `--intra-op-threads` | `GALEMIND_INTRA_OP_THREADS` | **derived** | Threads inside one operator, per loaded model |
+| `--inter-op-threads` | `GALEMIND_INTER_OP_THREADS` | `0` | Threads across independent branches of a graph |
+| `--parallel-execution` | `GALEMIND_PARALLEL_EXECUTION` | off | Run independent branches at once; for wide graphs |
+| `--cpu-mem-arena` | `GALEMIND_CPU_MEM_ARENA` | off | ONNX Runtime's arena allocator |
+| `--memory-high-water-mb` | `GALEMIND_MEMORY_HIGH_WATER_MB` | `500` | Reclaim above this |
+| `--memory-reclaim-cooldown-secs` | `GALEMIND_MEMORY_RECLAIM_COOLDOWN_SECS` | `30` | Wait before reclaiming again |
+
+The operator-thread default is derived from the machine and the repository --
+the cores divided between the models that can be loaded at once, up to half
+the machine -- which on a twelve-core host is six threads for one model and
+one for ten. Both ends of that are measured in [Using the cores](#using-the-cores);
+[Memory](#memory) covers the rest.
+
 ## The API
 
 The eight URLs of the protocol, and nothing else under `/v2`:
@@ -783,7 +802,8 @@ A failure that never resolved to a model is counted with empty labels.
 | `gm_server_worker_threads` | Async workers serving requests |
 | `gm_server_blocking_threads` | Threads available for blocking work; bounds concurrent inferences |
 | `gm_server_intra_op_threads` | Operator threads per model |
-| `gm_server_compute_threads_max` | `blocking × intra_op`; above `gm_cpu_count` the machine is oversubscribed |
+| `gm_server_loadable_models` | Versions that can be in memory at once; what operator threads multiply against |
+| `gm_server_compute_threads_max` | Executions in flight × operator threads; above `gm_cpu_count` the machine is oversubscribed |
 | `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
 | `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
 | `gm_server_allocator` | `system` or `jemalloc`; whether an idle server returns memory |
@@ -805,21 +825,75 @@ There are two thread pools and they multiply:
   inferences can execute at once. Tokio's own default is 512, which would let
   a burst across ten models start 512 inferences at once on a twelve-core
   machine; that is why it is bounded here.
-- **Operator threads** (`--intra-op-threads`, default 1) are what ONNX Runtime
-  may use *inside* one operator, **per loaded model**.
+- **Operator threads** (`--intra-op-threads`) are what ONNX Runtime may
+  use *inside* one operator, **per loaded model**. Derived from the cores
+  and the repository rather than fixed; see below.
 
-The default of one operator thread is the important one. `0` means "let ONNX
-Runtime choose", which is one thread per core for *every* loaded session: ten
-models on a twelve-core machine is 120 threads fighting over 12 cores, which
-costs more in contention than it gains in parallelism. So the parallelism here
-comes from serving models and batches side by side, which is the right shape
-for many small CPU models.
+The parallelism for a repository of models comes from serving them side by
+side, which is why the derived operator-thread count falls to one as the
+repository grows: ten models each taking a thread per core would be 120
+threads fighting over 12. For a server with one model it is the other way
+round, and the derivation says so.
 
 A server with one large model and spare cores is the opposite case and wants
 `--intra-op-threads` raised, or `intra_op_threads` set in that model's
 `config.json`. `--parallel-execution` additionally runs independent branches
 of a graph at once, which is worth it for a wide graph such as a large
 ensemble and pointless for a deep chain.
+
+### Operator threads are derived from the machine
+
+`--intra-op-threads` is not a fixed default. Left unset, the server divides
+the cores between the models that can be loaded at once:
+
+```text
+intra_op = clamp(cores / loadable_models, 1, cores / 2)
+loadable_models = min(--cache-capacity, versions in the repository)
+```
+
+On a twelve-core machine that is **six** threads for a repository of one
+model, three for four models, and **one** for the ten in this repository. On
+a two-core machine it is one whatever is loaded. The plan and its input are
+logged at startup and published as `gm_server_loadable_models`:
+
+```text
+INFO galemind: thread plan cpu_count=12 worker_threads=12 blocking_threads=24
+     intra_op_threads=6 loadable_models=1 compute_threads_max=6
+```
+
+Why that shape, measured at both ends. A single heavy model wants the
+threads, because its one execution is the only work there is:
+
+| `--intra-op-threads` | Cores used | Throughput | p50 |
+|---|---|---|---|
+| 1 | 1.3 | 168 req/s | 23.4 ms |
+| 6 (derived) | 2.7 | 289 req/s | 13.5 ms |
+
+Six models under load at once want the opposite, because their executions
+already fill the machine and operator threads only add contention:
+
+```text
+six models driven together, combined throughput
+--intra-op-threads 1    26 337 requests/s
+--intra-op-threads 3    23 747 requests/s
+--intra-op-threads 6    24 045 requests/s
+```
+
+Hence dividing rather than choosing: the derived value is the first table's
+answer for a server with one model and the second's for a server with ten.
+
+The ceiling of half the machine is there because the other half is not idle
+-- serving requests, encoding responses and answering scrapes took a quarter
+to a third of this server's CPU time in every measurement above. And the
+division rounds down, because an operator thread that has to share a core
+with another session's costs more in contention than it returns.
+
+Two values are still yours to set. An explicit `--intra-op-threads N`
+overrides the derivation entirely, and `0` keeps its ONNX Runtime meaning:
+let the runtime choose, which is one thread per core for *every* loaded
+session -- 120 threads on a twelve-core machine with ten models. A single
+model's `config.json` may also raise it for that model alone, which is how
+one heavy model gets more without the rest of the repository taking it too.
 
 ### One model, several cores
 

@@ -1,0 +1,35 @@
+%% The physical view: one container, two ports, and who talks to them.
+graph TB
+    subgraph clients["Callers"]
+        APP["Applications<br/>Rust / Python clients"]
+        CLI["gmctl"]
+        PROM["Prometheus"]
+        ORCH["Orchestrator probes"]
+    end
+
+    subgraph host["Host or node"]
+        subgraph container["Container — non-root, MALLOC_ARENA_MAX=2"]
+            P8000["8000/tcp — HTTP/1.1 and HTTP/2<br/>/v2/... and /metrics"]
+            P8001["8001/tcp — gRPC"]
+            SERVER["galemind serve"]
+            MODELS[("/app/models<br/>baked in, mountable")]
+            DATA[("/app/data<br/>RocksDB volume")]
+        end
+    end
+
+    APP -->|"Predict Protocol v2"| P8000
+    APP -->|"Predict Protocol v2"| P8001
+    CLI --> P8000
+    PROM -->|"scrape /metrics, no token"| P8000
+    ORCH -->|"health, no token"| P8000
+    P8000 --> SERVER
+    P8001 --> SERVER
+    SERVER --> MODELS
+    SERVER --> DATA
+
+    classDef port fill:#e8f0f8,stroke:#2a6fa8,stroke-width:2px,color:#1d4d75;
+    classDef unit fill:#ffffff,stroke:#8aa4bb,color:#20303d;
+    classDef store fill:#f6f7f9,stroke:#b8c3cf,color:#20303d;
+    class P8000,P8001 port;
+    class SERVER,APP,CLI,PROM,ORCH unit;
+    class MODELS,DATA store;

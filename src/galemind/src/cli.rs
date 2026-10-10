@@ -176,12 +176,22 @@ pub struct ThreadArgs {
     #[arg(long, env = "GALEMIND_BLOCKING_THREADS", default_value_t = 0)]
     pub blocking_threads: usize,
 
-    /// Threads ONNX Runtime may use inside one operator, per model. 0 lets
-    /// ONNX Runtime choose, which is one per core for every loaded model.
+    /// Threads ONNX Runtime may use inside one operator, per model.
     ///
-    /// A model's own `config.json` may raise this for itself.
-    #[arg(long, env = "GALEMIND_INTRA_OP_THREADS", default_value_t = 1)]
-    pub intra_op_threads: usize,
+    /// Left unset it is derived from the machine and the repository: the
+    /// cores are divided between the models that can be loaded at once, up
+    /// to half the machine for a single model. See
+    /// [`ThreadArgs::resolved_intra_op_threads`].
+    ///
+    /// `0` means something different and is kept: let ONNX Runtime choose,
+    /// which is one thread per core for *every* loaded model -- 120 threads
+    /// on a twelve-core machine with ten models.
+    ///
+    /// A model's own `config.json` may raise this for itself, which is how
+    /// one heavy model gets more without the rest of the repository taking
+    /// it too.
+    #[arg(long, env = "GALEMIND_INTRA_OP_THREADS", value_name = "N")]
+    pub intra_op_threads: Option<usize>,
 
     /// Run independent branches of a model's graph at once. Worth it for a
     /// wide graph such as a large ensemble, pointless for a deep chain, and it
@@ -228,6 +238,41 @@ impl ThreadArgs {
             0 => (Self::cpu_count() * 2).max(4),
             n => n.max(1),
         }
+    }
+
+    /// Operator threads per model, derived from the machine when not given.
+    ///
+    /// `loadable` is how many model versions can be in memory at once --
+    /// the smaller of the cache's capacity and what the repository holds.
+    /// That is the number operator threads multiply against, because ONNX
+    /// Runtime's threads belong to a session: eight threads is eight threads
+    /// with one model loaded and eighty with ten.
+    ///
+    /// So the cores are divided between them, with two floors and a ceiling:
+    ///
+    /// * at least one, since a session needs a thread to run on;
+    /// * at most half the machine, so that a single model cannot take a box
+    ///   whose other half is serving requests, decoding JSON and answering
+    ///   scrapes -- which is where a quarter to a third of this server's CPU
+    ///   time goes under load;
+    /// * and the division rounds down, because an operator thread that has
+    ///   to share a core with another session's costs more in contention
+    ///   than it returns.
+    ///
+    /// On a twelve-core machine that is six threads for a single model, three
+    /// for four models and one for ten; on a two-core machine it is one
+    /// whatever is loaded. Measured, both ends matter: one model went from
+    /// 200 to 354 requests a second between one thread and eight, and six
+    /// models at once went the other way, 26 337 requests a second at one
+    /// thread against 24 045 at six.
+    pub fn resolved_intra_op_threads(&self, loadable: usize) -> usize {
+        if let Some(threads) = self.intra_op_threads {
+            // Including zero, which means "let ONNX Runtime decide".
+            return threads;
+        }
+        let cores = Self::cpu_count();
+        let half = (cores / 2).max(1);
+        (cores / loadable.max(1)).clamp(1, half)
     }
 }
 
@@ -520,6 +565,70 @@ mod tests {
     /// Zero means "one per core" for workers and "twice that" for blocking
     /// work, so the defaults scale with the machine instead of pinning a
     /// figure chosen on another one.
+    /// The operator-thread default divides the machine between the models
+    /// that can be loaded at once, which is the number session threads
+    /// multiply against.
+    #[test]
+    fn operator_threads_are_divided_between_the_models_that_can_be_loaded() {
+        let derived = ThreadArgs {
+            worker_threads: 0,
+            blocking_threads: 0,
+            intra_op_threads: None,
+            inter_op_threads: 0,
+            parallel_execution: false,
+            cpu_mem_arena: false,
+        };
+        let cores = ThreadArgs::cpu_count();
+        let half = (cores / 2).max(1);
+
+        // One model may have half the machine, and no more: the other half
+        // is serving requests.
+        assert_eq!(derived.resolved_intra_op_threads(1), half);
+        // Ten models on anything up to twenty cores get one each.
+        assert_eq!(
+            derived.resolved_intra_op_threads(10),
+            (cores / 10).clamp(1, half)
+        );
+        // Never zero, however many models are loadable, since a session
+        // needs a thread to run on.
+        assert_eq!(derived.resolved_intra_op_threads(1_000), 1);
+        assert_eq!(
+            derived.resolved_intra_op_threads(0),
+            half,
+            "no models is not no cores"
+        );
+
+        // It divides, so more models never means more threads each.
+        let mut previous = usize::MAX;
+        for loadable in 1..=16 {
+            let threads = derived.resolved_intra_op_threads(loadable);
+            assert!(threads <= previous, "{loadable} models got more threads");
+            assert!(threads >= 1);
+            previous = threads;
+        }
+    }
+
+    /// An explicit value is honoured, including the zero that means "let
+    /// ONNX Runtime decide".
+    #[test]
+    fn an_explicit_operator_thread_count_wins_over_the_heuristic() {
+        let explicit = |threads: Option<usize>| ThreadArgs {
+            worker_threads: 0,
+            blocking_threads: 0,
+            intra_op_threads: threads,
+            inter_op_threads: 0,
+            parallel_execution: false,
+            cpu_mem_arena: false,
+        };
+
+        assert_eq!(explicit(Some(3)).resolved_intra_op_threads(10), 3);
+        assert_eq!(
+            explicit(Some(0)).resolved_intra_op_threads(1),
+            0,
+            "zero is ONNX Runtime's own default, not an unset value"
+        );
+    }
+
     #[test]
     fn the_thread_plan_defaults_to_the_machines_core_count() {
         let cli = Cli::try_parse_from(["galemind", "serve"]).unwrap();
@@ -532,7 +641,8 @@ mod tests {
         assert_eq!(args.threads.resolved_worker_threads(), cores);
         assert_eq!(args.threads.resolved_blocking_threads(), (cores * 2).max(4));
         // One operator thread per model, not one per core per model.
-        assert_eq!(args.threads.intra_op_threads, 1);
+        // Unset means derived, not one.
+        assert_eq!(args.threads.intra_op_threads, None);
         assert!(!args.threads.parallel_execution);
         // The arena is what makes resident memory climb and never fall.
         assert!(!args.threads.cpu_mem_arena);
@@ -557,7 +667,7 @@ mod tests {
         };
         assert_eq!(args.threads.resolved_worker_threads(), 4);
         assert_eq!(args.threads.resolved_blocking_threads(), 8);
-        assert_eq!(args.threads.intra_op_threads, 2);
+        assert_eq!(args.threads.intra_op_threads, Some(2));
         assert!(args.threads.cpu_mem_arena);
     }
 
@@ -568,7 +678,7 @@ mod tests {
         let threads = |blocking| ThreadArgs {
             worker_threads: 0,
             blocking_threads: blocking,
-            intra_op_threads: 1,
+            intra_op_threads: None,
             parallel_execution: false,
             inter_op_threads: 0,
             cpu_mem_arena: false,

@@ -1,0 +1,35 @@
+%% The +1, second scenario: what happens when resident memory crosses the
+%% high-water mark.
+sequenceDiagram
+    autonumber
+    participant G as Memory guard
+    participant P as /proc/self/status
+    participant AL as Allocator
+    participant SV as InferenceService
+    participant K as Model cache
+
+    loop every 2 seconds
+        G->>P: resident bytes
+    end
+    G->>G: over --memory-high-water-mb?
+    alt below the mark
+        G-->>G: nothing to do
+    else within the cooldown
+        G-->>G: a reclaim ran recently
+    else over the mark
+        G->>AL: return retained pages
+        alt jemalloc
+            AL-->>G: purged, pages back to the kernel
+        else platform allocator
+            AL-->>G: unsupported, log how to fix it
+        end
+        G->>P: resident bytes again
+        alt now under the mark
+            G-->>G: done, models still loaded
+        else still over
+            G->>SV: unload_all
+            SV->>K: invalidate every loaded version
+            K-->>SV: dropped sessions
+            SV-->>G: count, recorded for the metrics
+        end
+    end

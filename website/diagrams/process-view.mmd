@@ -1,0 +1,26 @@
+%% The process view: the threads and tasks a running server has, and what
+%% each may do at once. The numbers are the flags that bound them.
+graph TB
+    CLIENT(["Clients"]) --> ACCEPT["Accept queue<br/>--listen-backlog 4096"]
+
+    subgraph runtime["One process, one tokio runtime"]
+        ACCEPT --> WORKERS["Async workers — one per core<br/>decode, validate, encode, reply"]
+        WORKERS --> QUEUE["Per-model queue — 1024<br/>full ⇒ 503 overloaded"]
+        QUEUE --> DISP["Dispatcher per model<br/>forms the next batch while<br/>the current one executes"]
+        DISP -->|spawn_blocking| POOL["Blocking pool — 2 × cores"]
+        POOL --> SESSION["Session per model version<br/>one Run at a time, behind a mutex<br/>--intra-op-threads inside it"]
+        SESSION -->|rows| WORKERS
+
+        SWEEP["Cache sweeper<br/>every --cache-sweep-secs"]
+        MGUARD["Memory guard<br/>every 2s"]
+        SAMPLER["Resource sampler<br/>every --metrics-interval-ms"]
+    end
+
+    SWEEP -.unloads idle models.-> SESSION
+    MGUARD -.purges, then unloads.-> SESSION
+    SAMPLER -.reads /proc.-> MGUARD
+
+    classDef task fill:#ffffff,stroke:#8aa4bb,color:#20303d;
+    classDef hot fill:#e8f0f8,stroke:#2a6fa8,stroke-width:2px,color:#1d4d75;
+    class WORKERS,DISP,POOL,SESSION hot;
+    class QUEUE,SWEEP,SAMPLER,MGUARD,ACCEPT,CLIENT task;

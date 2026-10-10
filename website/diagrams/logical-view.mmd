@@ -1,0 +1,59 @@
+%% The logical view: what the pieces are, and which abstractions they meet
+%% at. Every arrow into the domain is a trait, so the arrows point inwards.
+graph TB
+    subgraph transports["Transports"]
+        direction LR
+        REST["rest_server<br/>axum"]
+        GRPC["grpc_server<br/>tonic"]
+    end
+
+    subgraph domain["galemind_core — the domain, no I/O"]
+        subgraph served["what a transport asks for"]
+            direction LR
+            INFER(["Inference"])
+            AUTH(["Authenticator"])
+            METRICS(["MetricsSource"])
+        end
+        subgraph replaceable["what an adapter provides"]
+            direction LR
+            CACHET(["ModelCache"])
+            STORE(["ModelStore"])
+            BACKEND(["Backend"])
+        end
+    end
+
+    subgraph orchestration["Orchestration"]
+        direction LR
+        SVC["galemind_service"]
+        BATCH["galemind_batching"]
+        CACHE["galemind_cache"]
+    end
+
+    subgraph adapters["Adapters"]
+        direction LR
+        ONNX["galemind_onnx"]
+        FS["FsModelStore"]
+        ROCKS["RocksModelStore"]
+    end
+
+    REST --> INFER
+    GRPC --> INFER
+    REST --> AUTH
+    GRPC --> AUTH
+    REST --> METRICS
+    SVC -.implements.-> INFER
+    SVC -.implements.-> METRICS
+    SVC --> BATCH
+    SVC --> CACHE
+    BATCH --> CACHET
+    CACHE -.implements.-> CACHET
+    CACHE --> BACKEND
+    CACHE --> STORE
+    ONNX -.implements.-> BACKEND
+    FS -.implements.-> STORE
+    ROCKS -.implements.-> STORE
+
+    classDef iface fill:#e8f0f8,stroke:#2a6fa8,stroke-width:2px,color:#1d4d75;
+    classDef unit fill:#ffffff,stroke:#8aa4bb,color:#20303d;
+    class INFER,AUTH,BACKEND,STORE,CACHET,METRICS iface;
+    class REST,GRPC,SVC,BATCH,CACHE,ONNX,FS,ROCKS unit;

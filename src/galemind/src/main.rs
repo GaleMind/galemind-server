@@ -299,8 +299,21 @@ type ServiceAndGuard = (
 async fn build_service(args: &ServeArgs) -> Result<ServiceAndGuard> {
     let (store, usage) = build_store(&args.repository).await?;
 
+    // How many model versions can be in memory at once, which is what
+    // per-session operator threads multiply against. Asked of the store
+    // rather than assumed: a cache that holds sixteen in front of a
+    // repository of two can only have two loaded, and giving each of them a
+    // sixteenth of the machine would waste most of it.
+    let versions = store.list().await.map(|keys| keys.len()).unwrap_or(0);
+    let loadable = match versions {
+        // Nothing to serve yet; the plan will be re-derived by whoever adds
+        // models and restarts, and one thread is the safe floor meanwhile.
+        0 => 1,
+        versions => versions.min(args.cache.cache_capacity.max(1)),
+    };
+
     let onnx = OnnxRuntimeConfig {
-        intra_op_threads: args.threads.intra_op_threads,
+        intra_op_threads: args.threads.resolved_intra_op_threads(loadable),
         inter_op_threads: args.threads.inter_op_threads,
         parallel_execution: args.threads.parallel_execution,
         cpu_mem_arena: args.threads.cpu_mem_arena,
@@ -314,6 +327,7 @@ async fn build_service(args: &ServeArgs) -> Result<ServiceAndGuard> {
         worker_threads: args.threads.resolved_worker_threads(),
         blocking_threads: args.threads.resolved_blocking_threads(),
         intra_op_threads: onnx.intra_op_threads,
+        loadable_models: loadable,
         cpu_mem_arena: onnx.cpu_mem_arena,
         // This crate installs the global allocator, so this crate is the only
         // one that can say which one is running.
@@ -325,6 +339,9 @@ async fn build_service(args: &ServeArgs) -> Result<ServiceAndGuard> {
         worker_threads = runtime.worker_threads,
         blocking_threads = runtime.blocking_threads,
         intra_op_threads = runtime.intra_op_threads,
+        // The input to the operator-thread default, so a plan that looks
+        // surprising can be explained without reading the code.
+        loadable_models = loadable,
         parallel_execution = onnx.parallel_execution,
         compute_threads_max = runtime.compute_threads(),
         cpu_mem_arena = runtime.cpu_mem_arena,

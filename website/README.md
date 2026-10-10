@@ -26,6 +26,42 @@ Node 20 or newer; `package.json` says so and the build refuses older versions.
 - There is no blog. An empty blog is worse than no blog; `blog: false` in the
   preset turns it off, and removing that line brings it back.
 
+## The architecture diagrams
+
+The 4+1 views on the architecture page are Mermaid sources in `diagrams/`,
+rendered to SVG in `static/img/views/` and committed. Rendering is a
+deliberate step rather than a client-side library: the page then carries no
+diagram runtime, the SVGs are searchable and diffable, and a diagram that
+fails to render fails here instead of in a reader's browser.
+
+```bash
+npx @mermaid-js/mermaid-cli -i diagrams/logical-view.mmd \
+  -o static/img/views/logical-view.svg -b transparent
+```
+
+All six at once:
+
+```bash
+for d in logical-view process-view development-view physical-view \
+         scenario-infer scenario-memory; do
+  npx @mermaid-js/mermaid-cli -i "diagrams/$d.mmd" \
+    -o "static/img/views/$d.svg" -b transparent
+done
+```
+
+mermaid-cli drives a headless Chromium. Where it cannot launch one -- a
+container without the sandbox -- pass it a puppeteer config:
+
+```bash
+echo '{"args":["--no-sandbox","--disable-dev-shm-usage"]}' > /tmp/puppeteer.json
+npx @mermaid-js/mermaid-cli -p /tmp/puppeteer.json -i ... -o ...
+```
+
+The diagrams are drawn for a light background and are wider than a page, so
+the `.diagram` class in `src/css/custom.css` gives them a light card and lets
+them scroll rather than shrinking the text to nothing. Edit the `.mmd`,
+re-render, and commit both.
+
 ## Deploying
 
 ```bash

@@ -385,6 +385,14 @@ pub fn render_prometheus(report: &PrometheusReport) -> String {
             report.runtime.intra_op_threads as u64,
         ),
         (
+            "gm_server_loadable_models",
+            "Model versions that can be in memory at once: the smaller of the \
+             cache's capacity and what the repository holds. Operator threads \
+             belong to a session, so this is what they multiply against, and \
+             it is what the server divides the cores between.",
+            report.runtime.loadable_models as u64,
+        ),
+        (
             "gm_server_compute_threads_max",
             "Upper bound on threads that may run model code at once: \
              blocking threads times intra-op threads. Above gm_cpu_count the \
@@ -747,6 +755,7 @@ mod tests {
                 worker_threads: 4,
                 blocking_threads: 8,
                 intra_op_threads: 1,
+                loadable_models: 8,
                 cpu_mem_arena: false,
                 malloc_arena_max: Some(2),
                 allocator: crate::runtime::SYSTEM_ALLOCATOR,
@@ -1062,8 +1071,9 @@ mod tests {
         assert!(text.contains("\ngm_server_worker_threads 8\n"), "{text}");
         assert!(text.contains("\ngm_server_blocking_threads 8\n"), "{text}");
         assert!(text.contains("\ngm_server_intra_op_threads 2\n"), "{text}");
-        // 8 blocking threads that may each use 2 operator threads on a
-        // 4-core machine.
+        // Eight loadable models against eight blocking threads, so eight
+        // executions, each of which may use two operator threads.
+        assert!(text.contains("\ngm_server_loadable_models 8\n"), "{text}");
         assert!(
             text.contains("\ngm_server_compute_threads_max 16\n"),
             "{text}"

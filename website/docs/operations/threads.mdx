@@ -16,22 +16,77 @@ There are two thread pools and they multiply:
   inferences can execute at once. Tokio's own default is 512, which would let
   a burst across ten models start 512 inferences at once on a twelve-core
   machine; that is why it is bounded here.
-- **Operator threads** (`--intra-op-threads`, default 1) are what ONNX Runtime
-  may use *inside* one operator, **per loaded model**.
+- **Operator threads** (`--intra-op-threads`) are what ONNX Runtime may
+  use *inside* one operator, **per loaded model**. Derived from the cores
+  and the repository rather than fixed; see below.
 
 ## Why one operator thread
 
-`0` means "let ONNX Runtime choose", which is one thread per core for *every*
-loaded session: ten models on a twelve-core machine is 120 threads fighting
-over 12 cores, which costs more in contention than it gains in parallelism. So
-the parallelism here comes from serving models and batches side by side, which
-is the right shape for many small CPU models.
+The parallelism for a repository of models comes from serving them side by
+side, which is why the derived operator-thread count falls to one as the
+repository grows: ten models each taking a thread per core would be 120
+threads fighting over 12. For a server with one model it is the other way
+round, and the derivation says so.
 
 A server with one large model and spare cores is the opposite case and wants
 `--intra-op-threads` raised, or `intra_op_threads` set in that model's
 `config.json`. `--parallel-execution` additionally runs independent branches
 of a graph at once, which is worth it for a wide graph such as a large
 ensemble and pointless for a deep chain.
+
+## Operator threads are derived from the machine
+
+`--intra-op-threads` is not a fixed default. Left unset, the server divides
+the cores between the models that can be loaded at once:
+
+```text
+intra_op = clamp(cores / loadable_models, 1, cores / 2)
+loadable_models = min(--cache-capacity, versions in the repository)
+```
+
+On a twelve-core machine that is **six** threads for a repository of one
+model, three for four models, and **one** for the ten in this repository. On
+a two-core machine it is one whatever is loaded. The plan and its input are
+logged at startup and published as `gm_server_loadable_models`:
+
+```text
+INFO galemind: thread plan cpu_count=12 worker_threads=12 blocking_threads=24
+     intra_op_threads=6 loadable_models=1 compute_threads_max=6
+```
+
+Why that shape, measured at both ends. A single heavy model wants the
+threads, because its one execution is the only work there is:
+
+| `--intra-op-threads` | Cores used | Throughput | p50 |
+|---|---|---|---|
+| 1 | 1.3 | 168 req/s | 23.4 ms |
+| 6 (derived) | 2.7 | 289 req/s | 13.5 ms |
+
+Six models under load at once want the opposite, because their executions
+already fill the machine and operator threads only add contention:
+
+```text
+six models driven together, combined throughput
+--intra-op-threads 1    26 337 requests/s
+--intra-op-threads 3    23 747 requests/s
+--intra-op-threads 6    24 045 requests/s
+```
+
+Hence dividing rather than choosing: the derived value is the first table's
+answer for a server with one model and the second's for a server with ten.
+
+The ceiling of half the machine is there because the other half is not idle
+-- serving requests, encoding responses and answering scrapes took a quarter
+to a third of this server's CPU time in every measurement above. And the
+division rounds down, because an operator thread that has to share a core
+with another session's costs more in contention than it returns.
+
+Two values are still yours to set. An explicit `--intra-op-threads N`
+overrides the derivation entirely, and `0` keeps its ONNX Runtime meaning:
+let the runtime choose, which is one thread per core for *every* loaded
+session — 120 threads on a twelve-core machine with ten models. A single
+model's `config.json` may also raise it for that model alone, which is how
+one heavy model gets more without the rest of the repository taking it too.
 
 ## One model, several cores
 

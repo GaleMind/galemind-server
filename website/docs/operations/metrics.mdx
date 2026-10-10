@@ -67,7 +67,8 @@ A failure that never resolved to a model is counted with empty labels.
 | `gm_server_worker_threads` | Async workers serving requests |
 | `gm_server_blocking_threads` | Threads available for blocking work; bounds concurrent inferences |
 | `gm_server_intra_op_threads` | Operator threads per model |
-| `gm_server_compute_threads_max` | `blocking × intra_op`; above `gm_cpu_count` the machine is oversubscribed |
+| `gm_server_loadable_models` | Versions that can be in memory at once; what operator threads multiply against |
+| `gm_server_compute_threads_max` | Executions in flight × operator threads; above `gm_cpu_count` the machine is oversubscribed |
 | `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
 | `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
 | `gm_server_allocator` | `system` or `jemalloc`; whether an idle server returns memory |
