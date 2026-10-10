@@ -5,6 +5,7 @@ members = [
     "src/onnx",
     "src/store",
     "src/cache",
+    "src/batching",
 ]
 
 [workspace.package]

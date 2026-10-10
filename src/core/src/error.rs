@@ -5,8 +5,9 @@ use thiserror::Error;
 /// Failures that can occur while serving an inference, metadata or health request.
 ///
 /// Transport crates map these onto HTTP status codes and gRPC status codes; the
-/// domain itself stays free of any transport dependency.
-#[derive(Debug, Error)]
+/// domain itself stays free of any transport dependency. The type is `Clone`
+/// because one failed batch has to be reported to every request in it.
+#[derive(Debug, Clone, Error)]
 pub enum InferError {
     #[error("model '{0}' is not known to this server")]
     ModelNotFound(String),
