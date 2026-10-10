@@ -1,0 +1,23 @@
+[package]
+name = "galemind-service"
+description = "Model resolution, caching and batching wired into one inference service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["rocksdb-store"]
+rocksdb-store = ["galemind-store/rocksdb-store"]
+
+[dependencies]
+galemind-core.workspace = true
+galemind-batching.workspace = true
+galemind-cache.workspace = true
+galemind-store.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+galemind-onnx.workspace = true
+tempfile = "3.14"

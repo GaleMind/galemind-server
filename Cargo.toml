@@ -6,6 +6,7 @@ members = [
     "src/store",
     "src/cache",
     "src/batching",
+    "src/service",
 ]
 
 [workspace.package]

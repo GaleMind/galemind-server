@@ -231,6 +231,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "galemind-service"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "galemind-batching",
+ "galemind-cache",
+ "galemind-core",
+ "galemind-onnx",
+ "galemind-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "galemind-store"
 version = "0.2.0"
 dependencies = [
