@@ -1,0 +1,7 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 4,
+  "description": "StackGAN stage II: 256x256 refinement of a stage I image.",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not."
+}

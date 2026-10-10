@@ -1,0 +1,7 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 32,
+  "description": "24-hour load forecast from 168 hourly readings.",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not."
+}

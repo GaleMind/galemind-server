@@ -19,6 +19,14 @@ pub struct ResourceSnapshot {
     pub cpu_utilization: f64,
     /// Resident memory of the process.
     pub memory_bytes: u64,
+    /// The largest resident memory this process has ever held.
+    ///
+    /// The kernel never lowers it, which is what makes it useful: resident
+    /// memory that has come back down still shows here, so a peak and a
+    /// current reading together tell retained memory from leaked memory. A
+    /// process that peaked at 104 MB and sits at 24 MB gave its memory back;
+    /// one whose current reading tracks its peak upwards did not.
+    pub memory_peak_bytes: u64,
     /// Memory the machine has in total.
     pub memory_total_bytes: u64,
     /// `memory_bytes / memory_total_bytes`, or 0 when the total is unknown.
@@ -67,9 +75,14 @@ impl ResourceSampler {
     pub fn sample(&self) -> ResourceSnapshot {
         let now = Instant::now();
         let cpu_secs = self.process_cpu_seconds();
-        let memory_bytes = read_file("/proc/self/status")
-            .and_then(|text| parse_vm_rss_bytes(&text))
-            .unwrap_or(0);
+        let status = read_file("/proc/self/status");
+        let memory_bytes = status.as_deref().and_then(parse_vm_rss_bytes).unwrap_or(0);
+        let memory_peak_bytes = status
+            .as_deref()
+            .and_then(parse_vm_hwm_bytes)
+            // Before Linux 2.6.32 or on a kernel without VmHWM, the current
+            // reading is the best lower bound on the peak.
+            .unwrap_or(memory_bytes);
         let memory_total_bytes = read_file("/proc/meminfo")
             .and_then(|text| parse_mem_total_bytes(&text))
             .unwrap_or(0);
@@ -94,6 +107,7 @@ impl ResourceSampler {
         ResourceSnapshot {
             cpu_utilization,
             memory_bytes,
+            memory_peak_bytes,
             memory_total_bytes,
             memory_utilization: if memory_total_bytes > 0 {
                 memory_bytes as f64 / memory_total_bytes as f64
@@ -151,6 +165,11 @@ fn parse_vm_rss_bytes(status: &str) -> Option<u64> {
     parse_kib_field(status, "VmRSS:")
 }
 
+/// Reads peak resident memory from `/proc/self/status`, in kibibytes.
+fn parse_vm_hwm_bytes(status: &str) -> Option<u64> {
+    parse_kib_field(status, "VmHWM:")
+}
+
 /// Reads total memory from `/proc/meminfo`, which reports kibibytes.
 fn parse_mem_total_bytes(meminfo: &str) -> Option<u64> {
     parse_kib_field(meminfo, "MemTotal:")
@@ -184,8 +203,11 @@ mod tests {
 
     #[test]
     fn memory_fields_are_read_as_bytes() {
-        let status = "Name:\tgalemind\nVmPeak:\t  900 kB\nVmRSS:\t  4096 kB\n";
+        let status = "Name:\tgalemind\nVmPeak:\t  900 kB\nVmHWM:\t  8192 kB\nVmRSS:\t  4096 kB\n";
         assert_eq!(parse_vm_rss_bytes(status), Some(4_194_304));
+        // VmPeak is virtual, VmHWM is resident; confusing the two reports an
+        // address space as memory in use.
+        assert_eq!(parse_vm_hwm_bytes(status), Some(8_388_608));
 
         let meminfo = "MemTotal:       16384 kB\nMemFree:         1024 kB\n";
         assert_eq!(parse_mem_total_bytes(meminfo), Some(16_777_216));
@@ -227,6 +249,10 @@ mod tests {
         let second = sampler.sample();
 
         assert!(second.memory_bytes > 0, "resident memory should be known");
+        assert!(
+            second.memory_peak_bytes >= second.memory_bytes,
+            "a peak cannot be below the current reading"
+        );
         assert!(second.memory_total_bytes >= second.memory_bytes);
         assert!((0.0..=1.0).contains(&second.memory_utilization));
         assert!((0.0..=1.0).contains(&second.cpu_utilization));

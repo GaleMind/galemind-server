@@ -1,0 +1,111 @@
+---
+id: installation
+title: Installation
+sidebar_position: 2
+description: Prerequisites, building, and why RocksDB is staged rather than compiled.
+---
+
+# Installation
+
+## Prerequisites
+
+- **Rust** 1.75 or newer, from [rustup.rs](https://rustup.rs/).
+- **libssl-dev** — `reqwest` links against it: `sudo apt install libssl-dev`.
+- **protobuf-compiler** — the gRPC crate compiles the protocol's `.proto`:
+  `sudo apt install protobuf-compiler`.
+- **libclang** — bindgen needs it for the default RocksDB store:
+  `sudo apt install libclang-dev`. `make rocksdb-lib` symlinks an existing
+  LLVM libclang if the unversioned `libclang.so` bindgen looks for is
+  missing. Not needed with `--no-default-features`.
+
+ONNX Runtime is downloaded by the `ort` crate at build time; there is nothing
+to install for it.
+
+## Building
+
+```bash
+git clone https://github.com/GaleMind/galemind-server.git
+cd galemind-server
+make rocksdb-lib     # once; see below
+cargo build --release
+```
+
+That produces two binaries in `target/release`: `galemind`, the server, and
+`gmctl`, the client.
+
+## RocksDB
+
+The default `rocksdb-store` feature pulls in `librocksdb-sys`, which compiles
+roughly 330 RocksDB C++ translation units from its build script. That takes
+minutes, and the `cc` crate keeps no object cache, so anything that
+invalidates the build script — a different feature unification between
+`cargo build` and `cargo test`, a moved `LIBCLANG_PATH`, or a single
+`Ctrl-C` — pays the full cost again.
+
+Build the archive once and every later build links it instead:
+
+```bash
+make rocksdb-lib
+```
+
+This stages an optimized `librocksdb.a` into `.cargo/rocksdb/`, which
+`.cargo/config.toml` points `ROCKSDB_LIB_DIR` at. The build script then only
+runs bindgen, taking the workspace build from minutes to seconds.
+
+The archive is a build artifact and is not committed, so run this once per
+clone, and again after bumping the `rocksdb` crate — bindgen always generates
+against the newly vendored headers, and the staged archive has to match.
+
+- `ROCKSDB_COMPILE=1` ignores the staged archive and compiles the vendored
+  sources.
+- `--no-default-features` skips RocksDB altogether and falls back to the
+  filesystem store.
+- Docker builds are unaffected: `.dockerignore` drops `.cargo/`, so they
+  compile from source.
+
+## Make targets
+
+| Command | Description |
+|---|---|
+| `make all` | Format, test, build |
+| `make test` | `cargo test` |
+| `make format` | `cargo fmt` |
+| `make run` | Start the server, loading `.env` first |
+| `make models` | Regenerate the model repository |
+| `make models-deps` | Install what `make models` needs |
+| `make rocksdb-lib` | Stage the prebuilt RocksDB archive |
+| `make docker-build` | Build the server image |
+| `make docker-run` | Run it, publishing 8000 and 8001 |
+| `cargo e2e` | The end-to-end suite (needs Docker) |
+
+## End-to-end tests
+
+The end-to-end suite drives a real server in a container, so it needs Docker
+and a built server image and is not part of `cargo test`:
+
+```bash
+docker compose build server
+cargo e2e
+```
+
+It lives in its own workspace under `src/e2e`, excluded from the root one.
+Cargo unifies features across every package selected for a build, so while it
+was a member, `cargo test` resolved shared leaf crates differently from
+`cargo build`; that moved bindgen's fingerprint, and with it the
+`librocksdb-sys` build script's, recompiling RocksDB on every alternation
+between the two. The cost of the split is a separate `src/e2e/target`, and
+dependency versions that have to be kept in step with the root
+`[workspace.dependencies]` by hand.
+
+## This documentation site
+
+The site is Docusaurus, in `website/`, and needs Node 20 or newer:
+
+```bash
+cd website
+npm ci
+npm start          # a dev server with live reload
+npm run build      # the static site, into website/build
+```
+
+Links are checked at build time and a broken one fails the build.

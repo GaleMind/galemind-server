@@ -1,0 +1,13 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 16,
+  "description": "Four-class classifier over 32x32 thermal frames.",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not.",
+  "classes": [
+    "sound",
+    "thermal_bridge",
+    "moisture",
+    "insulation_gap"
+  ]
+}

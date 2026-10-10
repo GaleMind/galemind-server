@@ -1,0 +1,115 @@
+# The client-to-server flow, end to end.
+#
+#   docker compose up --build server         # just the server
+#   docker compose run --rm client           # a prediction against it
+#   docker compose run --rm load             # the load test and its report
+#
+# The server's model repository is baked into the image; mount over
+# /app/models to serve your own.
+
+services:
+  server:
+    build:
+      context: .
+      args:
+        VERSION: "0.2.0"
+    image: galemind-server:0.2.0
+    command:
+      - serve
+      - --preload
+      - --metrics-interval-ms=500
+    ports:
+      - "8000:8000"   # REST, and /metrics
+      - "8001:8001"   # gRPC
+    environment:
+      GALEMIND_LOG: "info"
+      # Keep the whole repository loaded, so no request pays a model load.
+      # The repository holds eleven model versions across ten models; a
+      # capacity below that turns a round of the whole zoo into a cycle of
+      # evictions and reloads.
+      GALEMIND_CACHE_CAPACITY: "16"
+      GALEMIND_MAX_BATCH_SIZE: "32"
+      # Bounds glibc's per-thread freed-memory arenas. The image sets it
+      # too; it is repeated here because it is the single setting that most
+      # changes resident memory. See the README's memory section.
+      MALLOC_ARENA_MAX: "2"
+      # The kernel's accept queue for both ports. Raising it past
+      # net.core.somaxconn on the host has no effect, since the kernel caps
+      # what it is asked for; see the README's load-testing section.
+      GALEMIND_LISTEN_BACKLOG: "4096"
+    volumes:
+      # The durable store, so ingested artifacts and usage records survive a
+      # restart of the container.
+      - store:/app/data
+    healthcheck:
+      test: ["CMD", "gmctl", "--endpoint", "http://127.0.0.1:8000", "live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  # A one-shot client: predicts over REST, then over gRPC.
+  client:
+    image: galemind-server:0.2.0
+    depends_on:
+      server:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo '--- server metadata ---'
+        gmctl --endpoint http://server:8000 info
+        echo '--- model metadata (REST) ---'
+        gmctl --endpoint http://server:8000 metadata building_energy
+        echo '--- prediction (REST) ---'
+        gmctl --endpoint http://server:8000 infer building_energy \
+          --row '1800,30,-4,18,22,1,0,40' \
+          --row '55,2,18,14,21,5,1,600'
+        echo '--- classification (gRPC) ---'
+        gmctl --transport grpc --endpoint http://server:8001 \
+          infer building_energy_class --row '1800,30,-4,18,22,1,0,40'
+        echo '--- metrics ---'
+        gmctl --endpoint http://server:8000 metrics --filter gm_inference_count
+
+  # Drives load at the server and writes a JSON report to ./reports.
+  #
+  # The defaults are a smoke run, cheap enough to confirm the path works.
+  # A real measurement is a matter of overriding them:
+  #
+  #   LOAD_CONCURRENCY=10000 LOAD_REQUESTS=200000 docker compose run --rm load
+  #
+  # To drive the same run over gRPC, name that transport and its port:
+  #
+  #   LOAD_TRANSPORT=grpc LOAD_PORT=8001 docker compose run --rm load
+  #
+  # The report still carries the server's own metrics, which the client reads
+  # over HTTP whichever transport the load itself uses.
+  load:
+    image: galemind-server:0.2.0
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      GALEMIND_ENDPOINT: "http://server:${LOAD_PORT:-8000}"
+      GALEMIND_TRANSPORT: "${LOAD_TRANSPORT:-http}"
+    entrypoint: ["gmctl"]
+    command:
+      - load
+      - "${LOAD_MODEL:-building_energy}"
+      - "--concurrency=${LOAD_CONCURRENCY:-64}"
+      - "--requests=${LOAD_REQUESTS:-100}"
+      - "--rows=${LOAD_ROWS:-1}"
+      # Multiplex a high-concurrency run rather than asking the container for
+      # ten thousand descriptors: LOAD_TRANSPORT=http2 or grpc.
+      - "--max-connections=${LOAD_MAX_CONNECTIONS:-256}"
+      - "--poll-ms=${LOAD_POLL_MS:-250}"
+      - "--report=/app/reports/load.json"
+    # The report is written as the host user, so it is readable and removable
+    # outside the container.
+    user: "${LOAD_UID:-1000}:${LOAD_GID:-1000}"
+    volumes:
+      - ./reports:/app/reports
+
+volumes:
+  store:

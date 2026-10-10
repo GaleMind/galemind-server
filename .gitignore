@@ -3,7 +3,9 @@
 /data/
 __pycache__/
 *.pyc
-/.cargo/
+/.cargo/clanglink/
+/.cargo/rocksdb/
+/src/e2e/target/
 
 # Generated gRPC stubs for the Python client (`make generate`)
 /src/client/python/galemind/grpc_predict_v2_pb2.py

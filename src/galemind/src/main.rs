@@ -10,28 +10,55 @@ use cli::{Cli, Command, RepositoryArgs, ServeArgs, StoreKind};
 use galemind_batching::{AdaptiveBatchConfig, AdaptiveBatchPolicy, DispatcherConfig};
 use galemind_cache::LruTtlConfig;
 use galemind_core::{BackendRegistry, Inference, MetricsSource, ModelStore, SystemClock};
-use galemind_onnx::OnnxBackendFactory;
-use galemind_service::{InferenceService, ServiceBuilder};
+use galemind_onnx::{OnnxBackendFactory, OnnxRuntimeConfig};
+use galemind_service::{InferenceService, RuntimeInfo, ServiceBuilder};
 use galemind_store::FsModelStore;
+use rest_server::{Authenticator, NoAuth, StaticTokenAuth};
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Builds the async runtime by hand rather than with `#[tokio::main]`.
+///
+/// The macro's defaults are one worker per core and 512 blocking threads. The
+/// first is right; the second is not, for a server whose blocking pool is
+/// where model code runs: a burst across ten models would start as many
+/// inferences as there are queued batches, each with its own ONNX Runtime
+/// threads, and spend the machine on context switching. Both are therefore
+/// configurable, and the plan is logged and published in the metrics.
+fn main() -> Result<()> {
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(&cli.log))
         .with_target(true)
         .init();
 
-    match cli.command {
-        Command::Serve(args) => serve(args).await,
-        Command::Models(args) => list_models(args).await,
-        Command::Ingest(args) => ingest(args).await,
+    // Only serving is worth a tuned runtime; the one-shot commands are I/O
+    // bound and take the defaults.
+    let threads = match &cli.command {
+        Command::Serve(args) => Some(args.threads),
+        _ => None,
+    };
+
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all();
+    if let Some(threads) = threads {
+        builder
+            .worker_threads(threads.resolved_worker_threads())
+            .max_blocking_threads(threads.resolved_blocking_threads())
+            .thread_name("galemind-worker");
     }
+    let runtime = builder.build().context("cannot start the async runtime")?;
+
+    runtime.block_on(async move {
+        match cli.command {
+            Command::Serve(args) => serve(args).await,
+            Command::Models(args) => list_models(args).await,
+            Command::Ingest(args) => ingest(args).await,
+        }
+    })
 }
 
 /// Builds the store a running server reads models from.
@@ -97,8 +124,55 @@ async fn build_store(
 async fn build_service(args: &ServeArgs) -> Result<Arc<InferenceService>> {
     let (store, usage) = build_store(&args.repository).await?;
 
-    let backends =
-        BackendRegistry::new().with(Arc::new(OnnxBackendFactory::new(args.intra_op_threads)));
+    let onnx = OnnxRuntimeConfig {
+        intra_op_threads: args.threads.intra_op_threads,
+        inter_op_threads: args.threads.inter_op_threads,
+        parallel_execution: args.threads.parallel_execution,
+        cpu_mem_arena: args.threads.cpu_mem_arena,
+        // One allocation plan cannot fit batches that vary in size, which is
+        // every batch this server forms.
+        memory_pattern: false,
+    };
+    let backends = BackendRegistry::new().with(Arc::new(OnnxBackendFactory::with_config(onnx)));
+
+    let runtime = RuntimeInfo {
+        worker_threads: args.threads.resolved_worker_threads(),
+        blocking_threads: args.threads.resolved_blocking_threads(),
+        intra_op_threads: onnx.intra_op_threads,
+        cpu_mem_arena: onnx.cpu_mem_arena,
+        ..RuntimeInfo::detected()
+    };
+    info!(
+        cpu_count = runtime.cpu_count,
+        worker_threads = runtime.worker_threads,
+        blocking_threads = runtime.blocking_threads,
+        intra_op_threads = runtime.intra_op_threads,
+        parallel_execution = onnx.parallel_execution,
+        compute_threads_max = runtime.compute_threads(),
+        cpu_mem_arena = runtime.cpu_mem_arena,
+        platform = runtime.platform,
+        "thread plan"
+    );
+    match runtime.malloc_arena_max {
+        Some(arenas) => info!(malloc_arena_max = arenas, "allocator arenas bounded"),
+        // Worth a line at the default filter: it is the largest single
+        // influence on resident memory, it can only be set from outside the
+        // process, and a server that was not told looks like one with a leak.
+        None => info!(
+            "MALLOC_ARENA_MAX is unset; glibc may keep up to 8 freed-memory \
+             arenas per core, which can double resident memory under load. \
+             Set MALLOC_ARENA_MAX=2 to bound it"
+        ),
+    }
+    if runtime.compute_threads() > runtime.cpu_count * 2 {
+        warn!(
+            compute_threads_max = runtime.compute_threads(),
+            cpu_count = runtime.cpu_count,
+            "more threads may run model code than the machine has cores; \
+             lower --worker-threads or --intra-op-threads if throughput \
+             stops climbing"
+        );
+    }
 
     let policy = AdaptiveBatchPolicy::new(AdaptiveBatchConfig {
         min_window: args.batching.min_window(),
@@ -119,7 +193,8 @@ async fn build_service(args: &ServeArgs) -> Result<Arc<InferenceService>> {
             queue_capacity: args.batching.queue_capacity,
             queue_timeout: args.batching.queue_timeout(),
             sample_window: 64,
-        });
+        })
+        .with_runtime_info(runtime);
     if let Some(usage) = usage {
         builder = builder.with_usage_index(usage);
     }
@@ -180,15 +255,37 @@ async fn serve(args: ServeArgs) -> Result<()> {
         None => (None, None),
     };
 
-    let rest = tokio::spawn(rest_server::serve(
+    // An identity check is configuration, not code: the transport takes
+    // whatever implements the trait, and the binary picks one.
+    let authenticator: Arc<dyn Authenticator> = match &args.auth.auth_token {
+        Some(token) => {
+            info!(
+                rest = %args.rest_address,
+                grpc = %args.grpc_address,
+                "requiring a bearer token on both transports; health and \
+                 metrics stay open"
+            );
+            Arc::new(StaticTokenAuth::new(token.clone()))
+        }
+        None => {
+            info!("no authentication; every caller is served");
+            Arc::new(NoAuth)
+        }
+    };
+
+    let rest = tokio::spawn(rest_server::serve_with_auth(
         args.rest_address,
         Arc::clone(&service) as Arc<dyn Inference>,
         metrics_source,
+        Arc::clone(&authenticator),
+        args.listen_backlog,
         wait_for(shutdown.subscribe()),
     ));
-    let grpc = tokio::spawn(grpc_server::serve(
+    let grpc = tokio::spawn(grpc_server::serve_with_auth(
         args.grpc_address,
         Arc::clone(&service) as Arc<dyn Inference>,
+        Arc::clone(&authenticator),
+        args.listen_backlog,
         wait_for(shutdown.subscribe()),
     ));
 

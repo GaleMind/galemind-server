@@ -13,11 +13,16 @@ members = [
     "src/client/rust",
 ]
 
+# The end-to-end suite is its own workspace, run with `cargo e2e`. It is
+# excluded rather than a member so that its test-only dependencies cannot
+# change feature unification here; see the comment in src/e2e/Cargo.toml.
+exclude = ["src/e2e"]
+
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/Galemind/galemind-server"
+repository = "https://github.com/GaleMind/galemind-server"
 
 [workspace.dependencies]
 galemind-core = { path = "src/core" }
@@ -45,7 +50,8 @@ thiserror = "2.0"
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs"] }
 tonic = { version = "0.13", features = ["transport"] }
 tonic-build = "0.13"
-tower-http = { version = "0.6", features = ["trace"] }
+# The gRPC authentication check is a tower layer; an interceptor cannot await.
+tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

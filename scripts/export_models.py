@@ -141,7 +141,9 @@ def main() -> None:
     common_config = {
         "platform": "onnx_onnxv1",
         "max_batch_size": args.max_batch_size,
-        "intra_op_threads": 0,
+        # No intra_op_threads: the server's --intra-op-threads governs. A 0
+        # here would mean "let ONNX Runtime choose", which is one thread per
+        # core for every loaded model.
         "features": FEATURES,
     }
 

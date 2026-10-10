@@ -1,0 +1,7 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 16,
+  "description": "Digit classifier over 28x28 meter photographs.",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not."
+}

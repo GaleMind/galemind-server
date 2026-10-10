@@ -95,11 +95,13 @@ impl InferRequest {
             }
         }
 
-        for missing in metadata
+        // The first missing input is the error; a request missing two is
+        // still one request to fix.
+        if let Some(missing) = metadata
             .inputs
             .iter()
-            .filter(|t| !seen.contains(&t.name))
             .map(|t| &t.name)
+            .find(|name| !seen.contains(*name))
         {
             return Err(InferError::InvalidRequest(format!(
                 "request is missing required input '{missing}'"

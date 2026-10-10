@@ -3,18 +3,20 @@
 use crate::metrics::{render_prometheus, MetricsRegistry, PrometheusReport};
 use crate::registry::ModelRegistry;
 use crate::resources::{ResourceSampler, ResourceSnapshot};
+use crate::runtime::RuntimeInfo;
 use async_trait::async_trait;
 use galemind_batching::{BatchPolicy, Dispatcher, DispatcherConfig, DispatcherSnapshot};
 use galemind_core::{
-    CacheStats, Clock, InferError, InferRequest, InferResponse, Inference, MetricsSource,
-    ModelCache, ModelKey, ModelMetadata, ModelRef, SERVER_VERSION,
+    CacheStats, CatalogueEntry, Clock, InferError, InferRequest, InferResponse, Inference,
+    MetricsSource, ModelCache, ModelInfo, ModelKey, ModelMetadata, ModelRef, ModelStore,
+    VersionInfo, SERVER_VERSION,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 type Result<T> = std::result::Result<T, InferError>;
 
@@ -25,6 +27,9 @@ type Result<T> = std::result::Result<T, InferError>;
 /// rather than sharing one queue.
 pub struct InferenceService {
     registry: Arc<ModelRegistry>,
+    /// Read directly, not through the cache, to describe a version without
+    /// loading it; see [`InferenceService::model_info`].
+    store: Arc<dyn ModelStore>,
     cache: Arc<dyn ModelCache>,
     policy: Arc<dyn BatchPolicy>,
     clock: Arc<dyn Clock>,
@@ -33,6 +38,7 @@ pub struct InferenceService {
     ready: AtomicBool,
     metrics: Arc<MetricsRegistry>,
     resources: ResourceSampler,
+    runtime: RuntimeInfo,
     /// The newest resource reading. Utilisation is a rate, so it is sampled on
     /// an interval rather than computed inside a metrics scrape.
     latest_resources: RwLock<ResourceSnapshot>,
@@ -41,6 +47,7 @@ pub struct InferenceService {
 impl InferenceService {
     pub fn new(
         registry: Arc<ModelRegistry>,
+        store: Arc<dyn ModelStore>,
         cache: Arc<dyn ModelCache>,
         policy: Arc<dyn BatchPolicy>,
         clock: Arc<dyn Clock>,
@@ -48,6 +55,7 @@ impl InferenceService {
     ) -> Self {
         Self {
             registry,
+            store,
             cache,
             policy,
             clock,
@@ -56,8 +64,23 @@ impl InferenceService {
             ready: AtomicBool::new(false),
             metrics: Arc::new(MetricsRegistry::new()),
             resources: ResourceSampler::new(),
+            runtime: RuntimeInfo::detected(),
             latest_resources: RwLock::new(ResourceSnapshot::default()),
         }
+    }
+
+    /// Records the thread plan and build identity this server is running
+    /// with, so that a metrics scrape reports it.
+    ///
+    /// Taken by value at startup rather than detected here: only the binary
+    /// knows how many worker threads it asked the runtime for and what it
+    /// configured the backend with.
+    pub fn set_runtime_info(&mut self, runtime: RuntimeInfo) {
+        self.runtime = runtime;
+    }
+
+    pub fn runtime_info(&self) -> RuntimeInfo {
+        self.runtime
     }
 
     pub fn registry(&self) -> &Arc<ModelRegistry> {
@@ -98,6 +121,7 @@ impl InferenceService {
 
         PrometheusReport {
             server_version: SERVER_VERSION,
+            runtime: self.runtime,
             models: self.metrics.snapshot().await,
             dispatchers,
             unresolved_failures: self.metrics.unresolved_failures(),
@@ -171,11 +195,37 @@ impl InferenceService {
         &self,
         request: InferRequest,
     ) -> std::result::Result<(ModelKey, InferResponse), (Option<ModelKey>, InferError)> {
+        // Each stage is logged at debug with the time reached, so one request
+        // can be followed through the server and a slow one attributed to the
+        // stage that was slow -- version resolution, a model load, validation,
+        // or waiting in the batch queue. The id is the caller's when they sent
+        // one, so a line here can be matched to a line in their log.
+        let at = Instant::now();
+        let id = request.id.as_deref().unwrap_or("-").to_string();
+        let rows = request
+            .inputs
+            .first()
+            .and_then(|tensor| tensor.rows().ok())
+            .unwrap_or(1);
+        debug!(
+            request = %id,
+            model = %request.model,
+            inputs = request.inputs.len(),
+            rows,
+            "request received"
+        );
+
         let key = self
             .registry
             .resolve(&request.model)
             .await
             .map_err(|e| (None, e))?;
+        trace!(
+            request = %id,
+            model = %key,
+            elapsed_us = at.elapsed().as_micros(),
+            "resolved version"
+        );
 
         // Loading the model also gives the metadata the request is checked
         // against, so a malformed request is refused before it is queued.
@@ -188,12 +238,25 @@ impl InferenceService {
             return Err((Some(key), e));
         }
         drop(backend);
+        trace!(
+            request = %id,
+            model = %key,
+            elapsed_us = at.elapsed().as_micros(),
+            "validated against the loaded model"
+        );
 
         let dispatcher = self.dispatcher(&key).await;
         let mut response = dispatcher
             .submit(request, self.clock.now_millis())
             .await
             .map_err(|e| (Some(key.clone()), e))?;
+        debug!(
+            request = %id,
+            model = %key,
+            rows,
+            elapsed_us = at.elapsed().as_micros(),
+            "request answered"
+        );
 
         // The response names the version actually served, as the protocol asks.
         response.model_name = key.name.clone();
@@ -270,6 +333,110 @@ impl Inference for InferenceService {
 
     async fn models(&self) -> Result<Vec<ModelKey>> {
         Ok(self.registry.keys().await)
+    }
+
+    async fn catalogue(&self) -> Result<Vec<CatalogueEntry>> {
+        let loaded = self.cache.loaded_keys();
+        let models = self.registry.models().await;
+
+        let mut entries = Vec::with_capacity(models.len());
+        for (name, versions) in models {
+            // Every version resolves to the same platform in practice, but
+            // the newest is the one an unversioned request would use, so it is
+            // the one described.
+            let Some(latest) = versions.last().cloned() else {
+                continue;
+            };
+            let platform = match self.store.describe(&ModelKey::new(&name, &latest)).await {
+                Ok(descriptor) => descriptor.platform,
+                // A model the store cannot describe is still worth listing:
+                // the catalogue's job is to say what exists.
+                Err(e) => {
+                    warn!(model = %name, version = %latest, error = %e,
+                          "cannot describe the newest version");
+                    String::new()
+                }
+            };
+
+            entries.push(CatalogueEntry {
+                loaded_versions: versions
+                    .iter()
+                    .filter(|version| {
+                        loaded
+                            .iter()
+                            .any(|key| key.name == name && &key.version == *version)
+                    })
+                    .cloned()
+                    .collect(),
+                name,
+                latest_version: latest,
+                platform,
+                versions,
+            });
+        }
+        Ok(entries)
+    }
+
+    async fn model_info(&self, name: &str, load: bool) -> Result<ModelInfo> {
+        let versions = self
+            .registry
+            .versions(name)
+            .await
+            .ok_or_else(|| InferError::ModelNotFound(name.to_string()))?;
+        let latest = versions
+            .last()
+            .cloned()
+            .ok_or_else(|| InferError::ModelNotFound(name.to_string()))?;
+        let loaded = self.cache.loaded_keys();
+
+        let mut out = Vec::with_capacity(versions.len());
+        for version in &versions {
+            let key = ModelKey::new(name, version);
+            let descriptor = self.store.describe(&key).await?;
+            let resident = loaded.contains(&key);
+
+            // The signature comes from the loaded session, so it is reported
+            // for a version in memory, and for any version when the caller
+            // asked for the model to be loaded. Loading here goes through the
+            // cache, so it is also what a later request would use.
+            let metadata = if resident || load {
+                match self.cache.get(&key).await {
+                    Ok(backend) => Some(backend.metadata().clone()),
+                    Err(e) => {
+                        warn!(model = %key, error = %e, "cannot load version for its signature");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            out.push(VersionInfo {
+                version: version.clone(),
+                platform: descriptor.platform,
+                digest: descriptor.digest,
+                size_bytes: descriptor.size_bytes,
+                max_batch_size: descriptor.config.max_batch_size,
+                intra_op_threads: descriptor.config.intra_op_threads,
+                // Asking the cache again would report a version evicted by
+                // loading a later one as resident, so this is what was true
+                // when the signature was read.
+                loaded: metadata.is_some(),
+                is_latest: version == &latest,
+                inputs: metadata
+                    .as_ref()
+                    .map(|m| m.inputs.clone())
+                    .unwrap_or_default(),
+                outputs: metadata.map(|m| m.outputs).unwrap_or_default(),
+            });
+        }
+
+        debug!(model = %name, versions = out.len(), load, "described model");
+        Ok(ModelInfo {
+            name: name.to_string(),
+            latest_version: latest,
+            versions: out,
+        })
     }
 }
 

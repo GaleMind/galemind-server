@@ -132,6 +132,24 @@ impl LruTtlCache {
         }
     }
 
+    /// Drops the load gates nothing is waiting on any more.
+    ///
+    /// A gate is created per model version on its first load and would
+    /// otherwise outlive the model it guarded: a server that cycles through
+    /// many versions would accumulate one small allocation per version for as
+    /// long as it ran. A gate is kept while anything holds it -- a strong
+    /// count above one means a loader has it -- or while its model is
+    /// resident, since that model will be loaded again after an eviction.
+    fn prune_gates(&self) {
+        let resident = self
+            .lock_entries()
+            .map(|entries| entries.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if let Ok(mut gates) = self.gates.lock() {
+            gates.retain(|key, gate| Arc::strong_count(gate) > 1 || resident.contains(key));
+        }
+    }
+
     fn gate(&self, key: &ModelKey) -> Result<Arc<tokio::sync::Mutex<()>>> {
         let mut gates = self
             .gates
@@ -209,6 +227,7 @@ impl ModelCache for LruTtlCache {
                 debug!(model = %key, "invalidated cached model");
             }
         }
+        self.prune_gates();
     }
 
     async fn sweep(&self) -> usize {
@@ -229,7 +248,19 @@ impl ModelCache for LruTtlCache {
             self.counters.expirations.fetch_add(1, Ordering::Relaxed);
             info!(model = %key, "unloaded model after time-to-live expired");
         }
+        drop(entries);
+
+        self.prune_gates();
         expired.len()
+    }
+
+    fn loaded_keys(&self) -> Vec<ModelKey> {
+        let mut keys = self
+            .lock_entries()
+            .map(|entries| entries.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort();
+        keys
     }
 
     fn stats(&self) -> CacheStats {

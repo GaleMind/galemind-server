@@ -3,13 +3,16 @@
 from .client import (
     DEFAULT_GRPC_ENDPOINT,
     DEFAULT_HTTP_ENDPOINT,
+    CatalogueEntry,
     GrpcClient,
     HttpClient,
     InferenceError,
     InferenceResponse,
+    ModelInfo,
     ModelMetadata,
     ServerMetadata,
     TensorMetadata,
+    VersionInfo,
 )
 from .tensors import BINARY_ENCODING_PARAMETER, ELEMENT_SIZE, Tensor, datatypes
 
@@ -20,14 +23,17 @@ __all__ = [
     "DEFAULT_GRPC_ENDPOINT",
     "DEFAULT_HTTP_ENDPOINT",
     "ELEMENT_SIZE",
+    "CatalogueEntry",
     "GrpcClient",
     "HttpClient",
     "InferenceError",
     "InferenceResponse",
+    "ModelInfo",
     "ModelMetadata",
     "ServerMetadata",
     "Tensor",
     "TensorMetadata",
+    "VersionInfo",
     "datatypes",
     "__version__",
 ]

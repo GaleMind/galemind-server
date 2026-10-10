@@ -1,0 +1,84 @@
+---
+id: metrics
+title: Metrics
+sidebar_position: 1
+description: Prometheus text at /metrics, with Triton-compatible names.
+---
+
+# Metrics
+
+Prometheus text at `/metrics` on the REST port, never authenticated. Names
+follow NVIDIA Triton's with `gm_` where Triton uses `nv_`, so dashboards and
+alerts port across with a prefix change. Metrics that cannot mean anything
+here are left out rather than reported as zero: no GPU metrics on a CPU
+server, no pinned memory without a GPU, no response-cache metrics without a
+response cache.
+
+## Build and platform
+
+```text
+gm_server_info{version="0.2.0",platform="amd64",os="linux"} 1
+gm_server_version{version="0.2.0"} 1
+gm_server_platform{platform="amd64",os="linux"} 1
+```
+
+The version and the platform are published as series of their own as well as
+labels on `gm_server_info`: a join works in a query but is awkward in an alert
+and impossible in a Grafana variable, and those two are what a deployment is
+grouped by. The architecture is named as container images name it — `amd64`,
+`arm64` — not as Rust spells it.
+
+## Per model
+
+Labelled `model` and `version`.
+
+| Metric | |
+|---|---|
+| `gm_inference_request_success` | Requests answered |
+| `gm_inference_request_failure` | Failures, by `reason`: `rejected`, `timeout`, `backend`, `invalid`, `other` |
+| `gm_inference_count` | Rows inferred (a batch of n counts n) |
+| `gm_inference_exec_count` | Batch executions; `count / exec_count` is the mean batch size |
+| `gm_inference_pending_request_count` | Queued, not yet executing |
+| `gm_inference_request_duration_us` | Cumulative end-to-end microseconds |
+| `gm_inference_queue_duration_us` | Cumulative microseconds waiting in the queue |
+| `gm_inference_compute_infer_duration_us` | Cumulative microseconds in the backend |
+| `gm_inference_request_duration_seconds` | Histogram, twelve buckets from 100µs to 1s |
+| `gm_batch_merged_count` | Executions that combined more than one request |
+
+A failure that never resolved to a model is counted with empty labels.
+
+## Cache
+
+`gm_model_cache_entries`, `gm_model_cache_resident_bytes`,
+`gm_model_cache_hit_count`, `gm_model_cache_miss_count`,
+`gm_model_cache_eviction_count`, `gm_model_cache_expiration_count`,
+`gm_models_available`.
+
+## Process and machine
+
+| Metric | |
+|---|---|
+| `gm_cpu_utilization` | Share of the machine used since the last sample, where 1.0 is every core |
+| `gm_cpu_count` | Cores available |
+| `gm_memory_usage_bytes` | Resident memory now |
+| `gm_memory_peak_bytes` | The largest it has ever been |
+| `gm_memory_total_bytes`, `gm_memory_utilization` | The machine's memory |
+| `gm_server_uptime_seconds` | Seconds since the server started |
+| `gm_server_worker_threads` | Async workers serving requests |
+| `gm_server_blocking_threads` | Threads available for blocking work; bounds concurrent inferences |
+| `gm_server_intra_op_threads` | Operator threads per model |
+| `gm_server_compute_threads_max` | `blocking × intra_op`; above `gm_cpu_count` the machine is oversubscribed |
+| `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
+| `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
+
+Utilisation is a rate, so it is sampled on `--metrics-interval-ms` rather than
+computed during a scrape. Counters are cumulative and never reset.
+
+## From the command line
+
+```bash
+gmctl metrics                          # a table
+gmctl metrics --filter inference       # one family
+gmctl metrics --watch 2                # every two seconds
+gmctl metrics --json                    # for a script
+```

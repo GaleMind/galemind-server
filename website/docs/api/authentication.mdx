@@ -1,0 +1,119 @@
+---
+id: authentication
+title: Authentication
+sidebar_position: 4
+description: One trait, both transports, off by default, with health and metrics always open.
+---
+
+# Authentication
+
+Off by default: every caller is served. It is a seam rather than a decision,
+because the identity provider is a deployment's choice.
+
+```bash
+GALEMIND_AUTH_TOKEN=s3cret cargo run -p galemind -- serve
+
+curl -H 'Authorization: Bearer s3cret' http://localhost:8000/v2/models/list
+gmctl --token s3cret models
+gmctl --transport grpc --token s3cret infer building_energy --rows 2
+```
+
+## One decision, both transports
+
+The trait is in the domain crate, not in a transport, because both ports have
+to make the same decision about the same token:
+
+```rust
+#[async_trait]
+pub trait Authenticator: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn allows_anonymous(&self) -> bool { false }
+    async fn authenticate(&self, token: Option<&str>) -> Result<Identity, AuthError>;
+}
+```
+
+Two implementations ship. `NoAuth`, the default, accepts everything as
+`anonymous` and ignores a token rather than reporting an unverified one as an
+identity. `StaticTokenAuth` compares one shared secret in constant time. A
+provider that issues real identities implements the same trait and is passed
+to `rest_server::app_with_auth` and `grpc_server::serve_with_auth` — one line
+each in the binary.
+
+What each transport adds is its own shape:
+
+| | HTTP | gRPC |
+|---|---|---|
+| Where it runs | an axum middleware | a tower layer in front of the router |
+| Reads | the `Authorization` header | `authorization` metadata, which is the same header |
+| A bad credential | 401 with `WWW-Authenticate: Bearer` | `UNAUTHENTICATED` |
+| A credential that does not reach | 403, with no challenge | `PERMISSION_DENIED` |
+| The identity | request extensions | request extensions |
+
+### Why a tower layer and not a tonic interceptor
+
+tonic's own seam, `Interceptor`, is a synchronous
+`Request<()> -> Result<Request<()>, Status>`. That is enough for a shared
+secret and not enough for anything that fetches: a real provider has to await
+— Keycloak's JWKS is an HTTP call, a cached key still expires, an
+introspection endpoint is a round trip. Doing that from a sync interceptor
+means blocking a runtime thread per request, which is a way to deadlock a
+server under load rather than a way to authenticate it. A layer's future is
+ours, so an await is just an await.
+
+A refusal is a trailers-only response built from a `tonic::Status`, which is
+what a gRPC client expects. Answering with a bare HTTP 401 would reach it as a
+transport error with no status code, so the one thing it needs to know — that
+the credential, not the network, was the problem — would be the thing it could
+not see.
+
+## What stays open
+
+Health and metrics are never authenticated, on either transport:
+
+| Open | HTTP | gRPC |
+|---|---|---|
+| Liveness | `/v2/health/live` | `ServerLive` |
+| Readiness | `/v2/health/ready` | `ServerReady` |
+| One model's readiness | `/v2/models/{model}/ready`, `/v2/models/{model}/versions/{version}/ready` | `ModelReady` |
+| Metrics | `/metrics` | — |
+
+An orchestrator's probe has no token to send and Prometheus has no way to send
+one, so requiring one would turn switching authentication on into a rolling
+restart of a server that then reports itself unhealthy.
+
+Every readiness check counts, including a model's own: a probe that waits for
+one named model to be ready is how a deployment that preloads nothing avoids
+sending traffic into a cold cache, and that probe has no more credentials than
+the server-wide one. What it can tell an unauthenticated caller is whether a
+model it already knew the name of is loaded — a boolean, from a name it had to
+supply — and not what models exist, what they take or what they answer. Those
+are the catalogue and metadata endpoints, which stay closed:
+
+```text
+no token    /v2/models/list                           401
+bad token   /v2/models/list                           401
+good token  /v2/models/list                           200
+            /v2/health/live                           200
+            /metrics                                  200
+            /v2/models/building_energy/ready          200
+            /v2/models/building_energy/versions/1/ready  200
+no token    /v2/models/building_energy                401
+```
+
+A deployment that considers even that too much keeps the port off the public
+network; one that considers the counters sensitive turns the scrape off with
+`--allow-metrics false`.
+
+## Keycloak
+
+The case this was shaped for. Such an implementation holds the realm's issuer
+URL, the audience it accepts and a cache of the realm's JWKS; `authenticate`
+verifies the token's signature against the cached key for its `kid`, checks
+`iss`, `aud` and `exp`, and returns the `sub` with the realm roles as scopes —
+refusing with `AuthError::Invalid` on a bad signature or an expired token, and
+refetching the JWKS when a `kid` is unknown. Because `authenticate` is async,
+fetching a key it has not cached is an await rather than a blocking call on a
+request thread.
+
+It needs a JWT library and a key cache, which is why it is not written yet:
+what exists is the seam it plugs into, on both ports.

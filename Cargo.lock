@@ -533,6 +533,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -631,6 +632,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "tower",
  "tracing",
 ]
 
@@ -1527,6 +1529,7 @@ dependencies = [
 name = "rest_server"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "axum",
  "galemind-core",
  "galemind-onnx",
@@ -1536,7 +1539,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
 ]
 
@@ -2039,7 +2041,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 

@@ -1,0 +1,42 @@
+---
+id: grpc
+title: gRPC
+sidebar_position: 3
+description: The same protocol on port 8001, from the protocol's own proto file.
+---
+
+# gRPC
+
+The same six calls, on port 8001, from the protocol's own
+`grpc_predict_v2.proto`:
+
+```protobuf
+service GRPCInferenceService {
+  rpc ServerLive(ServerLiveRequest) returns (ServerLiveResponse);
+  rpc ServerReady(ServerReadyRequest) returns (ServerReadyResponse);
+  rpc ModelReady(ModelReadyRequest) returns (ModelReadyResponse);
+  rpc ServerMetadata(ServerMetadataRequest) returns (ServerMetadataResponse);
+  rpc ModelMetadata(ModelMetadataRequest) returns (ModelMetadataResponse);
+  rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse);
+}
+```
+
+There is no streaming, no chat endpoint and no protocol-selection header; a
+previous version of this server had all three, and they are gone. There is
+also no catalogue method — the two [catalogue
+endpoints](./catalogue.mdx) are HTTP extensions, and the Rust client refuses
+them over gRPC rather than quietly asking the other port.
+
+```bash
+gmctl --transport grpc models        # error: unsupported, and says where to ask
+gmctl --transport grpc infer building_energy --rows 4
+```
+
+Because gRPC is HTTP/2, every call is a stream on a shared connection. That is
+why a gRPC run at concurrency 10 000 holds dozens of sockets rather than ten
+thousand; the client pools channels and spreads calls across them. See
+[Load testing](../operations/load-testing.mdx).
+
+Authentication applies here too — the same token, the same authenticator, with
+`UNAUTHENTICATED` and `PERMISSION_DENIED` in place of 401 and 403. See
+[Authentication](./authentication.mdx).

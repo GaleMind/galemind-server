@@ -1,0 +1,12 @@
+# What the two model generators need. Nothing here is needed to build or run
+# the server: the models they write are committed, so this is only for
+# regenerating or extending the repository (`make models`).
+#
+# Lower bounds rather than pins: the generators use long-settled APIs, and
+# pinning would age badly in a file nobody rebuilds often. The opset the
+# models are written at is pinned in the scripts themselves, which is the part
+# that decides whether ONNX Runtime can load them.
+numpy>=1.26
+onnx>=1.16
+scikit-learn>=1.4
+skl2onnx>=1.16

@@ -21,7 +21,11 @@ pub enum InferError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
-    #[error("unsupported model artifact: {0}")]
+    // Not "unsupported model artifact": the variant also covers a call a
+    // transport does not implement, and a message reading "unsupported model
+    // artifact: the grpc transport has no model catalogue call" names the
+    // wrong thing. The detail says what is unsupported.
+    #[error("unsupported: {0}")]
     Unsupported(String),
 
     #[error("backend failure: {0}")]

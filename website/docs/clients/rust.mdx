@@ -1,0 +1,69 @@
+---
+id: rust
+title: Rust client
+sidebar_position: 2
+description: One trait over both transports, with the connection shape as configuration.
+---
+
+# The Rust client
+
+```toml
+[dependencies]
+galemind-client = { git = "https://github.com/GaleMind/galemind-server" }
+```
+
+The same six calls over either transport, behind one trait, so a program
+chooses HTTP or gRPC by configuration rather than by being written twice.
+Requests and responses are the domain types from `galemind_core`, and the JSON
+encoding is the shared one, so client and server cannot drift apart.
+
+```rust
+use galemind_client::{connect, Transport};
+use galemind_core::{InferRequest, ModelRef};
+
+let client = connect(Transport::Http, "http://localhost:8000").await?;
+assert!(client.server_ready().await?);
+
+let metadata = client.model_metadata(&ModelRef::name("building_energy")).await?;
+let response = client.infer(request).await?;
+```
+
+## Choosing the connection's shape
+
+`connect` is sized for occasional use — a request at a time. Anything driving
+the server hard should say so, because a client left at its defaults becomes
+the bottleneck before the server does:
+
+```rust
+use galemind_client::{connect_as, ClientConfig, Transport};
+
+let plan = ClientConfig::for_concurrency(10_000)
+    .with_bearer_token(Some("s3cret"))
+    .with_max_connections(Some(64));
+
+let client = connect_as(Transport::Http2, "http://localhost:8000", &plan).await?;
+```
+
+| | HTTP/1.1 | HTTP/2 | gRPC |
+|---|---|---|---|
+| Requests per socket | one at a time | many, as streams | many, as streams |
+| Sockets at concurrency *n* | *n* | a pool, up to the ceiling | a pool, up to the ceiling |
+| Catalogue calls | yes | yes | no |
+| Bearer token | header | header | metadata |
+
+`PredictV2Client::sockets_for(concurrency)` reports which of those a client
+is, which is what the load generator's descriptor-limit check is built on.
+
+## The catalogue
+
+`model_list` and `model_info` are HTTP extensions, so the trait's default
+implementation returns `InferError::Unsupported` naming the endpoint — the
+gRPC client does not quietly ask the other port.
+
+## The load generator
+
+`run_load(client, LoadConfig)` returns a `LoadReport` that serialises to the
+JSON `gmctl load --report` writes, and `LoadReport::merge` adds up the reports
+of several processes. `galemind_client::limits` holds the descriptor
+arithmetic: `file_limits`, `descriptors_needed`, `check_sockets`,
+`max_connections`.

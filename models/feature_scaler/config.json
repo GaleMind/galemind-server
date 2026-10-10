@@ -1,0 +1,7 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 64,
+  "description": "Standardises the eight building features.",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not."
+}

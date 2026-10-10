@@ -1,0 +1,94 @@
+---
+id: model-repository
+title: The model repository
+sidebar_position: 3
+description: How models are laid out, configured, and what ships in the repository.
+---
+
+# The model repository
+
+A directory of models, each with versioned subdirectories:
+
+```text
+models/
+  building_energy/
+    config.json          # optional
+    1/model.onnx
+  occupancy_mlp/
+    config.json
+    1/model.onnx
+    2/model.onnx         # an unversioned request resolves to the newest
+```
+
+A version directory's name is the version, so versions are whatever you call
+them; numeric ones are compared as numbers, so `10` is newer than `9`. A model
+directory holding `model.onnx` directly is served as version `1`.
+
+## config.json
+
+Optional, and so is every field in it:
+
+```json
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 32,
+  "intra_op_threads": 1
+}
+```
+
+`max_batch_size` caps how many requests the server merges into one call for
+this model. `intra_op_threads` overrides the server's `--intra-op-threads` for
+this model alone — raise it for a model with wide operators, and read
+[Using the cores](./operations/threads.mdx) before you do. Anything else in
+the file is ignored, so a description, the feature names or the class labels
+can live there too.
+
+## The committed models
+
+Ten models, eleven versions, all synthetic and all committed. They exist to be
+served, not believed: the weights are random, so the shapes, the datatypes and
+the cost are real and the predictions are not. Two are trained scikit-learn
+ensembles on a synthetic building-energy dataset; the rest are ONNX graphs
+built directly by `scripts/synthetic_models.py`.
+
+| Model | Inputs | Outputs | Batch | What it is for |
+|---|---|---|---|---|
+| `building_energy` | `features[-1,8]` | `kwh[-1,1]` | 32 | Random-forest regressor |
+| `building_energy_class` | `features[-1,8]` | `band[-1]`, `probabilities[-1,3]` | 32 | Random-forest classifier; an integer label beside float scores |
+| `occupancy_mlp` | `features[-1,8]` | `occupancy[-1,1]` | 32 | Dense net, in **two versions**, so version resolution has something to resolve |
+| `energy_autoencoder` | `features[-1,8]` | `reconstruction[-1,8]`, `anomaly_score[-1,1]` | 32 | Two outputs of different widths from one input |
+| `feature_scaler` | `features[-1,8]` | `scaled[-1,8]` | 64 | Three operators; the latency floor, with no model to blame |
+| `load_forecast_tcn` | `sequence[-1,1,168]` | `forecast[-1,24]` | 32 | Dilated 1-D convolutions over a week of hourly readings |
+| `thermal_cnn` | `image[-1,1,32,32]` | `logits[-1,4]`, `probabilities[-1,4]` | 16 | Small CNN; requests are kilobytes |
+| `meter_digit_cnn` | `image[-1,1,28,28]` | `digit[-1]`, `probabilities[-1,10]` | 16 | CNN with a label and scores |
+| `stackgan_stage1` | `text_embedding[-1,128]`, `noise[-1,100]` | `image_64[-1,3,64,64]` | 8 | StackGAN stage I; **two inputs** |
+| `stackgan_stage2` | `image_64[-1,3,64,64]`, `text_embedding[-1,128]` | `image_256[-1,3,256,256]` | 4 | StackGAN stage II; 768 KB per row, tens of ms per row |
+
+The spread is the point. `feature_scaler` answers in microseconds and
+`stackgan_stage2` holds a core for tens of milliseconds while returning three
+quarters of a megabyte per row, and a server is judged on how it behaves with
+both loaded at once. On a twelve-core machine, with one worker and
+`--rows 4`:
+
+```text
+feature_scaler        55300 requests/s
+building_energy       56914 requests/s
+load_forecast_tcn     14192 requests/s
+thermal_cnn            4562 requests/s
+stackgan_stage1         324 requests/s
+stackgan_stage2          20 requests/s
+```
+
+## Regenerating them
+
+```bash
+make models-deps                                    # numpy, onnx, sklearn, skl2onnx
+make models                                         # all of them
+.venv/bin/python scripts/synthetic_models.py --list
+.venv/bin/python scripts/synthetic_models.py --only stackgan_stage2
+```
+
+`cargo test -p galemind-onnx --test model_zoo` loads every model in the
+repository, runs it, and checks that a batch gives each row the answer it
+would have had alone. A generated graph that ONNX's checker accepts is not
+necessarily one ONNX Runtime can serve, and that test is the difference.

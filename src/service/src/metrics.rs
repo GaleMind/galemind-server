@@ -12,6 +12,7 @@
 //! rates are computed by the scraper from the difference between scrapes.
 
 use crate::resources::ResourceSnapshot;
+use crate::runtime::RuntimeInfo;
 use galemind_batching::DispatcherSnapshot;
 use galemind_core::{CacheStats, InferError, ModelKey};
 use std::collections::HashMap;
@@ -241,6 +242,8 @@ impl MetricsRegistry {
 /// Everything a scrape needs, gathered before rendering.
 pub struct PrometheusReport {
     pub server_version: &'static str,
+    /// The thread plan and build identity this server is running with.
+    pub runtime: RuntimeInfo,
     pub models: Vec<(ModelKey, ModelMetricsSnapshot)>,
     pub dispatchers: HashMap<ModelKey, DispatcherSnapshot>,
     pub unresolved_failures: [u64; 5],
@@ -261,9 +264,88 @@ pub fn render_prometheus(report: &PrometheusReport) -> String {
     );
     let _ = writeln!(
         out,
-        "gm_server_info{{version=\"{}\"}} 1",
+        "gm_server_info{{version=\"{}\",platform=\"{}\",os=\"{}\"}} 1",
+        report.server_version, report.runtime.platform, report.runtime.os
+    );
+
+    // The version and the platform are also published one label each. A join
+    // against gm_server_info works but is awkward in an alert and impossible
+    // in a Grafana variable, and these two are what a deployment is grouped
+    // by: which build is running, and on what.
+    metric(
+        &mut out,
+        "gm_server_version",
+        "gauge",
+        "Server version; the value is always 1 and the version is the label.",
+    );
+    let _ = writeln!(
+        out,
+        "gm_server_version{{version=\"{}\"}} 1",
         report.server_version
     );
+
+    metric(
+        &mut out,
+        "gm_server_platform",
+        "gauge",
+        "Architecture and operating system this server is running on, named as \
+         container images name them (amd64, arm64); the value is always 1.",
+    );
+    let _ = writeln!(
+        out,
+        "gm_server_platform{{platform=\"{}\",os=\"{}\"}} 1",
+        report.runtime.platform, report.runtime.os
+    );
+
+    // -- how the machine is being used ------------------------------------
+    //
+    // Throughput that stops climbing with concurrency is either a saturated
+    // machine or a server that was told to use one core; these say which.
+    // gm_cpu_count is reported with the other resource readings below.
+    for (name, help, value) in [
+        (
+            "gm_server_worker_threads",
+            "Async worker threads serving requests.",
+            report.runtime.worker_threads as u64,
+        ),
+        (
+            "gm_server_blocking_threads",
+            "Threads available for blocking work. A batch executes on one of \
+             these, so this bounds how many inferences can run at once.",
+            report.runtime.blocking_threads as u64,
+        ),
+        (
+            "gm_server_intra_op_threads",
+            "Threads ONNX Runtime may use inside one operator, per model. \
+             0 means ONNX Runtime chooses, which is one per core per model.",
+            report.runtime.intra_op_threads as u64,
+        ),
+        (
+            "gm_server_compute_threads_max",
+            "Upper bound on threads that may run model code at once: \
+             blocking threads times intra-op threads. Above gm_cpu_count the \
+             machine is oversubscribed.",
+            report.runtime.compute_threads() as u64,
+        ),
+        (
+            "gm_malloc_arena_max",
+            "The MALLOC_ARENA_MAX the process was started with, or 0 when \
+             unset. Unset lets glibc keep up to eight freed-memory arenas per \
+             core, which is the largest single influence on resident memory \
+             under load.",
+            report.runtime.malloc_arena_max.unwrap_or(0) as u64,
+        ),
+        (
+            "gm_server_cpu_mem_arena",
+            "1 when ONNX Runtime's CPU arena allocator is in use. The arena \
+             never returns memory, so resident memory grows to the high-water \
+             mark of the largest batch seen.",
+            u64::from(report.runtime.cpu_mem_arena),
+        ),
+    ] {
+        metric(&mut out, name, "gauge", help);
+        let _ = writeln!(out, "{name} {value}");
+    }
 
     // -- per-model request counts -----------------------------------------
 
@@ -514,6 +596,16 @@ pub fn render_prometheus(report: &PrometheusReport) -> String {
 
     metric(
         &mut out,
+        "gm_memory_peak_bytes",
+        "gauge",
+        "Largest resident memory this process has held. Compared with \
+         gm_memory_usage_bytes it separates memory that was given back from \
+         memory that was not.",
+    );
+    let _ = writeln!(out, "gm_memory_peak_bytes {}", resources.memory_peak_bytes);
+
+    metric(
+        &mut out,
         "gm_memory_total_bytes",
         "gauge",
         "Memory the machine has in total.",
@@ -583,6 +675,17 @@ mod tests {
     ) -> PrometheusReport {
         PrometheusReport {
             server_version: "0.2.0",
+            runtime: RuntimeInfo {
+                version: "0.2.0",
+                platform: "amd64",
+                os: "linux",
+                cpu_count: 4,
+                worker_threads: 4,
+                blocking_threads: 8,
+                intra_op_threads: 1,
+                cpu_mem_arena: false,
+                malloc_arena_max: Some(2),
+            },
             models,
             dispatchers: dispatchers.into_iter().collect(),
             unresolved_failures: [0; 5],
@@ -597,6 +700,7 @@ mod tests {
             resources: ResourceSnapshot {
                 cpu_utilization: 0.25,
                 memory_bytes: 1_048_576,
+                memory_peak_bytes: 2_097_152,
                 memory_total_bytes: 8_388_608,
                 memory_utilization: 0.125,
                 cpu_count: 4,
@@ -817,8 +921,11 @@ mod tests {
         assert!(text.contains("gm_cpu_utilization 0.250000"));
         assert!(text.contains("gm_cpu_count 4"));
         assert!(text.contains("gm_memory_usage_bytes 1048576"));
+        assert!(text.contains("gm_memory_peak_bytes 2097152"));
         assert!(text.contains("gm_memory_utilization 0.125000"));
-        assert!(text.contains("gm_server_info{version=\"0.2.0\"} 1"));
+        assert!(
+            text.contains("gm_server_info{version=\"0.2.0\",platform=\"amd64\",os=\"linux\"} 1")
+        );
     }
 
     #[test]
@@ -849,5 +956,49 @@ mod tests {
                 "sample for undeclared metric: {line}"
             );
         }
+    }
+    /// A deployment is grouped by which build is running and on what, so both
+    /// are published as series of their own rather than only as labels on
+    /// gm_server_info.
+    #[test]
+    fn the_build_and_the_platform_are_each_a_series_of_their_own() {
+        let text = render_prometheus(&report(Vec::new(), Vec::new()));
+
+        assert!(
+            text.contains("gm_server_version{version=\"0.2.0\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("gm_server_platform{platform=\"amd64\",os=\"linux\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("gm_server_info{version=\"0.2.0\",platform=\"amd64\",os=\"linux\"} 1"),
+            "{text}"
+        );
+    }
+
+    /// Whether the machine is oversubscribed is a question about threads, so
+    /// the thread plan is reported rather than left to the startup log.
+    #[test]
+    fn the_thread_plan_is_reported_so_oversubscription_can_be_seen() {
+        let mut report = report(Vec::new(), Vec::new());
+        report.runtime.worker_threads = 8;
+        report.runtime.blocking_threads = 8;
+        report.runtime.intra_op_threads = 2;
+        let text = render_prometheus(&report);
+
+        assert!(text.contains("\ngm_cpu_count 4\n"), "{text}");
+        assert!(text.contains("\ngm_server_worker_threads 8\n"), "{text}");
+        assert!(text.contains("\ngm_server_blocking_threads 8\n"), "{text}");
+        assert!(text.contains("\ngm_server_intra_op_threads 2\n"), "{text}");
+        // 8 blocking threads that may each use 2 operator threads on a
+        // 4-core machine.
+        assert!(
+            text.contains("\ngm_server_compute_threads_max 16\n"),
+            "{text}"
+        );
+        assert!(text.contains("\ngm_server_cpu_mem_arena 0\n"), "{text}");
+        assert!(text.contains("\ngm_malloc_arena_max 2\n"), "{text}");
     }
 }

@@ -1,5 +1,6 @@
 //! The service end to end: real ONNX models, real cache, real batching.
 
+use galemind_cache::LruTtlConfig;
 use galemind_core::{
     BackendRegistry, DataType, InferError, InferRequest, Inference, ModelKey, ModelRef, Parameters,
     Tensor, TensorData, PLATFORM_ONNX,
@@ -8,6 +9,7 @@ use galemind_onnx::OnnxBackendFactory;
 use galemind_service::ServiceBuilder;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models")
@@ -43,15 +45,25 @@ fn request(model: &str, rows: &[[f32; 8]]) -> InferRequest {
 }
 
 #[tokio::test]
-async fn both_models_in_the_repository_are_served() {
+async fn every_model_in_the_repository_is_served() {
     let service = service().await;
-    assert_eq!(
-        service.models().await.unwrap(),
-        vec![
-            ModelKey::new("building_energy", "1"),
-            ModelKey::new("building_energy_class", "1"),
-        ]
-    );
+    let served = service.models().await.unwrap();
+
+    // Asserted by containment rather than equality: the repository is a zoo
+    // that grows, and a test that had to be edited for every model added to
+    // it would be edited without being read.
+    for expected in [
+        ModelKey::new("building_energy", "1"),
+        ModelKey::new("building_energy_class", "1"),
+        // The one model with two versions, so that resolution has something
+        // to resolve.
+        ModelKey::new("occupancy_mlp", "1"),
+        ModelKey::new("occupancy_mlp", "2"),
+        ModelKey::new("stackgan_stage1", "1"),
+    ] {
+        assert!(served.contains(&expected), "{expected} is not served");
+    }
+    assert!(served.len() >= 10, "the zoo is ten models: {served:?}");
     assert!(service.is_ready().await);
     assert!(
         service
@@ -206,12 +218,59 @@ async fn preloading_puts_every_model_in_the_cache_before_serving() {
     let backends = BackendRegistry::new().with(Arc::new(OnnxBackendFactory::new(1)));
     let service = ServiceBuilder::new(backends)
         .with_filesystem_store(repository())
+        // Large enough for the whole repository. The default of eight is
+        // not, and preloading into a cache that cannot hold everything is
+        // the next test.
+        .with_cache_config(LruTtlConfig {
+            capacity: 64,
+            ttl: Duration::from_secs(3_600),
+        })
         .build()
         .unwrap();
 
     assert_eq!(service.cache_stats().entries, 0);
     service.start(true).await.unwrap();
-    assert_eq!(service.cache_stats().entries, 2);
+
+    let versions = service.models().await.unwrap().len();
+    assert_eq!(
+        service.cache_stats().entries,
+        versions,
+        "preloading loads every version in the repository"
+    );
+    assert!(service.cache_stats().resident_bytes > 0);
+    assert!(service.is_ready().await);
+}
+
+/// Preloading a repository larger than the cache is not an error, and does
+/// not leave the cache over its capacity: the earliest models are evicted as
+/// the later ones load, so a request for one of them pays a load after all.
+///
+/// This is the case to recognise in a deployment that sets `--preload` and
+/// then sees cache misses: the capacity, not the preload, is what is wrong.
+#[tokio::test]
+async fn preloading_more_models_than_the_cache_holds_evicts_rather_than_fails() {
+    let backends = BackendRegistry::new().with(Arc::new(OnnxBackendFactory::new(1)));
+    let capacity = 4;
+    let service = ServiceBuilder::new(backends)
+        .with_filesystem_store(repository())
+        .with_cache_config(LruTtlConfig {
+            capacity,
+            ttl: Duration::from_secs(3_600),
+        })
+        .build()
+        .unwrap();
+
+    service.start(true).await.expect("preloading succeeds");
+
+    let stats = service.cache_stats();
+    assert!(
+        stats.entries <= capacity,
+        "the cache stayed within its capacity: {stats:?}"
+    );
+    assert!(
+        stats.evictions > 0,
+        "loading more models than fit must have evicted some: {stats:?}"
+    );
     assert!(service.is_ready().await);
 }
 

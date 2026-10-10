@@ -15,8 +15,8 @@
 
 use async_trait::async_trait;
 use galemind_core::{
-    InferError, ModelArtifact, ModelConfig, ModelKey, ModelStore, ModelUsage, ModelWriter,
-    UsageIndex,
+    InferError, ModelArtifact, ModelConfig, ModelDescriptor, ModelKey, ModelStore, ModelUsage,
+    ModelWriter, UsageIndex,
 };
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,11 @@ struct StoredMetadata {
     max_batch_size: Option<usize>,
     #[serde(default)]
     intra_op_threads: Option<usize>,
+    /// Size of the artifact in the `artifacts` family. Recorded here so that
+    /// describing a version does not have to read its bytes; absent for
+    /// records written before it was kept.
+    #[serde(default)]
+    size_bytes: Option<usize>,
 }
 
 /// What the `usage` column family holds for each model version.
@@ -153,6 +158,27 @@ impl ModelStore for RocksModelStore {
         })
         .await
     }
+
+    /// Reads only the `metadata` family, so describing every version of every
+    /// model costs no artifact reads at all.
+    async fn describe(&self, key: &ModelKey) -> Result<ModelDescriptor> {
+        let key = key.clone();
+        self.with_db(move |db| {
+            let metadata = Self::read_metadata(db, &key)?;
+            Ok(ModelDescriptor {
+                key,
+                platform: metadata.platform,
+                digest: metadata.digest,
+                config: ModelConfig {
+                    platform: None,
+                    max_batch_size: metadata.max_batch_size,
+                    intra_op_threads: metadata.intra_op_threads,
+                },
+                size_bytes: metadata.size_bytes,
+            })
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -165,6 +191,7 @@ impl ModelWriter for RocksModelStore {
             digest: artifact.digest.clone(),
             max_batch_size: artifact.config.max_batch_size,
             intra_op_threads: artifact.config.intra_op_threads,
+            size_bytes: Some(artifact.bytes.len()),
         };
 
         self.with_db(move |db| {

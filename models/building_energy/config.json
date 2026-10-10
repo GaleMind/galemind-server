@@ -1,7 +1,6 @@
 {
   "platform": "onnx_onnxv1",
   "max_batch_size": 32,
-  "intra_op_threads": 0,
   "features": [
     "floor_area_m2",
     "occupancy",

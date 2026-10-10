@@ -1,0 +1,55 @@
+---
+id: architecture
+title: Architecture
+sidebar_position: 9
+description: A workspace of small crates, each depending on behaviour rather than on a framework.
+---
+
+# Architecture
+
+A workspace of small crates, each depending on behaviour rather than on a
+runtime, a framework or a storage engine.
+
+| Crate | |
+|---|---|
+| `src/core` | The domain: datatypes, tensors, model identity, requests, the JSON encoding, the authentication trait, and the traits every replaceable part implements. No I/O. |
+| `src/onnx` | The ONNX Runtime backend. The only crate that knows ONNX Runtime exists. |
+| `src/store` | Model repositories: a directory tree, RocksDB, memory. |
+| `src/cache` | The bounded, time-to-live model cache with single-flight loading. |
+| `src/batching` | The per-model dispatcher and the adaptive batch policy. |
+| `src/service` | Resolution, caching and batching behind one trait; metrics; the listening socket. |
+| `src/rest_server` | The HTTP transport, the tracing and auth middleware. |
+| `src/grpc_server` | The gRPC transport and its auth layer. |
+| `src/galemind` | The server binary and its command line. |
+| `src/client/rust` | The client library, the load generator, and `gmctl`. |
+| `src/client/python` | The Python client. |
+| `src/e2e` | The end-to-end suite, in its own workspace. |
+| `scripts/` | Model generators, the RocksDB staging script. |
+| `website/` | This documentation site. |
+
+## The seams
+
+Everything replaceable is a trait in `src/core`, implemented elsewhere:
+
+| Trait | Replace it to |
+|---|---|
+| `Backend`, `BackendFactory` | Serve a runtime that is not ONNX |
+| `ModelStore`, `ModelWriter` | Keep models somewhere else |
+| `ModelCache` | Change what stays loaded |
+| `Inference` | Put something else behind both transports |
+| `Authenticator` | Check credentials against a real provider |
+| `MetricsSource` | Report somewhere other than Prometheus text |
+| `Clock` | Make time deterministic in a test |
+
+A transport depends on `Inference` and nothing below it: it decodes, calls,
+and encodes. That is why there is one service implementation behind two
+protocols rather than two servers.
+
+## Why the end-to-end suite is a separate workspace
+
+Cargo unifies features across every package selected for a build, so while
+`src/e2e` was a member, `cargo test` resolved shared leaf crates differently
+from `cargo build`; that moved bindgen's fingerprint, and with it the
+`librocksdb-sys` build script's, recompiling 330 C++ translation units on
+every alternation between the two. The cost of the split is a separate
+`src/e2e/target` and dependency versions kept in step by hand.

@@ -1,0 +1,8 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 32,
+  "description": "Dense occupancy regressor (64x32 hidden).",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not.",
+  "features": 8
+}

@@ -10,7 +10,7 @@ all: generate
 
 ## Generate the gRPC stubs from the service definition
 generate:
-	python -m grpc_tools.protoc \
+	python3 -m grpc_tools.protoc \
 		--proto_path=$(PROTO_DIR) \
 		--python_out=$(OUT_DIR) \
 		--grpc_python_out=$(OUT_DIR) \
@@ -22,7 +22,7 @@ generate:
 
 ## Run the client tests
 test:
-	python -m pytest -q
+	python333 -m pytest -q
 
 ## Remove the generated stubs
 clean:

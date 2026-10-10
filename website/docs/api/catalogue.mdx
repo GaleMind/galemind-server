@@ -1,0 +1,92 @@
+---
+id: catalogue
+title: The catalogue
+sidebar_position: 2
+description: "Two extension endpoints: what this server can serve, and every version of one model."
+---
+
+# The catalogue endpoints
+
+The protocol has one metadata call, for one version of one model. It answers
+"what does this model take and return" and nothing answers "what can this
+server serve" or "which versions of this model are there". Those two are what
+you ask first, so they are served as extensions:
+
+```text
+GET /v2/models/list
+GET /v2/models/info/{model}[?load=false]
+```
+
+## Listing
+
+```bash
+curl -s http://localhost:8000/v2/models/list
+```
+
+```json
+{
+  "count": 10,
+  "models": [
+    {
+      "name": "occupancy_mlp",
+      "versions": ["1", "2"],
+      "latest_version": "2",
+      "platform": "onnx_onnxv1",
+      "loaded_versions": ["2"],
+      "ready": true
+    }
+  ]
+}
+```
+
+Listing loads nothing, so a repository larger than the cache can be listed
+without evicting a model that requests are using. `ready` says whether a
+request naming no version would be served without a load.
+
+## One model's versions
+
+```bash
+curl -s http://localhost:8000/v2/models/info/occupancy_mlp
+```
+
+```json
+{
+  "name": "occupancy_mlp",
+  "latest_version": "2",
+  "versions": [
+    {
+      "version": "1",
+      "platform": "onnx_onnxv1",
+      "digest": "0f2c…",
+      "size_bytes": 4135,
+      "max_batch_size": 32,
+      "loaded": true,
+      "is_latest": false,
+      "inputs":  [{"name": "features",  "datatype": "FP32", "shape": [-1, 8]}],
+      "outputs": [{"name": "occupancy", "datatype": "FP32", "shape": [-1, 1]}]
+    },
+    {"version": "2", "is_latest": true, "…": "…"}
+  ]
+}
+```
+
+A signature comes from a loaded session, so `info` loads each version that is
+not already in memory. `?load=false` skips that and returns the versions,
+their settings and their digests with empty `inputs` and `outputs` — worth it
+against a server whose models are larger than its cache.
+
+The digest is the artifact's SHA-256, which is what says two deployments are
+serving the same bytes. It is reported by the RocksDB store, which records it
+when ingesting; `--store filesystem` returns it empty rather than reading and
+hashing every model to answer a listing.
+
+## Two things to know
+
+Because a static path segment wins over a parameter, **`list` and `info` are
+reserved model names**: a model called `list` would be unreachable at
+`/v2/models/list`. Nothing else is shadowed, and the protocol's own URLs are
+untouched.
+
+Neither endpoint exists on the gRPC service, which has no catalogue method;
+the Rust client says so rather than quietly listing over HTTP from a gRPC
+client.

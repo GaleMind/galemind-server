@@ -1,0 +1,68 @@
+---
+id: intro
+title: GaleMind Server
+sidebar_label: Introduction
+sidebar_position: 1
+slug: /intro
+description: A CPU inference server that speaks Predict Protocol v2 over HTTP and gRPC.
+---
+
+# GaleMind Server
+
+A CPU inference server that speaks the [Predict Protocol
+v2](https://github.com/kserve/open-inference-protocol) over HTTP and gRPC, and
+nothing else. It loads ONNX models from a repository, merges concurrent
+requests into batches, keeps the hot ones in memory, and reports what it is
+doing in Prometheus text.
+
+```bash
+git clone https://github.com/GaleMind/galemind-server.git
+cd galemind-server
+make rocksdb-lib          # once per clone: stage the prebuilt RocksDB archive
+cargo build --release
+cargo run --release -p galemind -- serve
+```
+
+In another shell, with `target/release` on your `PATH`:
+
+```bash
+gmctl models                              # what the server can serve
+gmctl infer building_energy --rows 4
+```
+
+## What it is
+
+- **One protocol.** The eight URLs of Predict Protocol v2, plus two
+  [catalogue endpoints](./api/catalogue.mdx) of our own. No chat endpoint, no
+  streaming, no protocol-selection header.
+- **Backends.** ONNX Runtime. Adding another means implementing
+  `galemind_core::Backend` and registering a factory.
+- **Stores.** RocksDB, which ingests a directory tree and serves durably from
+  it, or the directory tree read straight through.
+- **Batching.** Concurrent requests for the same model are merged into one
+  call, inside a window bounded at both ends so batching cannot add unbounded
+  latency.
+- **Clients.** A Rust library with the `gmctl` command line, and a Python
+  client whose HTTP side needs only the standard library.
+
+## What it is not
+
+It runs on CPUs. There is no GPU support and no metric pretending to measure
+one. It serves models that are already trained and exported to ONNX; nothing
+here trains, fine-tunes or converts. And it is one server rather than a
+control plane: no scheduler, no model registry API, no multi-tenancy beyond a
+bearer token.
+
+## Where to go next
+
+| If you want to | Read |
+|---|---|
+| Build it | [Installation](./installation.mdx) |
+| Put your own models in it | [The model repository](./model-repository.mdx) |
+| Configure it | [Running the server](./running-the-server.mdx) |
+| Call it | [The API](./api/overview.mdx) |
+| Script it | [gmctl](./clients/gmctl.mdx) |
+| Watch it | [Metrics](./operations/metrics.mdx) and [Following a request](./operations/tracing.mdx) |
+| Make it fast | [Using the cores](./operations/threads.mdx) and [Load testing](./operations/load-testing.mdx) |
+| Work out where the memory went | [Memory](./operations/memory.mdx) |
+| Change it | [Architecture](./architecture.mdx) |

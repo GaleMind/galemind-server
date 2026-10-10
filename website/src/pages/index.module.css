@@ -1,0 +1,98 @@
+/**
+ * CSS files with the .module.css suffix will be treated as CSS modules
+ * and scoped locally.
+ */
+
+.heroBanner {
+  padding: 5rem 0 4rem;
+  overflow: hidden;
+  background: linear-gradient(
+    160deg,
+    var(--ifm-color-primary-darkest) 0%,
+    var(--ifm-color-primary-dark) 55%,
+    var(--ifm-color-primary) 100%
+  );
+  color: #fff;
+}
+
+.heroText {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.heroTitle {
+  font-size: 3rem;
+  line-height: 1.1;
+  margin-bottom: 0.75rem;
+}
+
+.heroSubtitle {
+  font-size: 1.25rem;
+  line-height: 1.5;
+  opacity: 0.9;
+  margin-bottom: 2rem;
+}
+
+.heroCode {
+  text-align: left;
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 3rem 1rem 2.5rem;
+  }
+
+  .heroTitle {
+    font-size: 2.25rem;
+  }
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* The measured numbers, each linking to where they are explained. */
+.numbers {
+  padding: 2.5rem 0 0.5rem;
+}
+
+.number {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 1.25rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: var(--ifm-card-border-radius, 8px);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+
+.number:hover {
+  border-color: var(--ifm-color-primary);
+  text-decoration: none;
+  transform: translateY(-2px);
+}
+
+.numberFigure {
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ifm-color-primary);
+  line-height: 1.1;
+}
+
+.numberLabel {
+  font-weight: 600;
+  margin-top: 0.25rem;
+}
+
+.numberDetail {
+  font-size: 0.875rem;
+  color: var(--ifm-color-emphasis-700);
+  margin-top: 0.4rem;
+}

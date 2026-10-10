@@ -39,6 +39,44 @@ pub fn sole_input(metadata: &ModelMetadata) -> Result<&TensorMetadata> {
     }
 }
 
+/// Generates a batch for every input a model declares.
+///
+/// [`sole_input`] covers the common case of a model taking one feature
+/// matrix, and cannot address a model that takes two -- a generator
+/// conditioned on an embedding and a noise vector, say, or a refiner taking
+/// an image and the embedding that produced it. Those are exactly the models
+/// worth load testing, so this fills all of them.
+///
+/// Each input gets its own stream, derived from `seed` and the input's
+/// position, so one input is not a copy of another and the whole batch is
+/// still reproducible from the seed alone.
+pub fn synthesize_inputs(metadata: &ModelMetadata, rows: usize, seed: u64) -> Result<Vec<Tensor>> {
+    if metadata.inputs.is_empty() {
+        return Err(InferError::InvalidRequest(format!(
+            "model '{}' declares no inputs",
+            metadata.name
+        )));
+    }
+
+    metadata
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let width = row_width(input)?;
+            let values = synthesize_rows(
+                rows.max(1),
+                width,
+                // Mixed rather than added so that two inputs of the same
+                // width do not receive shifted copies of one stream.
+                seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(index as u64),
+            );
+            rows_to_tensor(input, &values)
+        })
+        .collect()
+}
+
 /// How many values one row of an input holds, from the model's own shape.
 pub fn row_width(input: &TensorMetadata) -> Result<usize> {
     let mut width = 1usize;
@@ -218,6 +256,75 @@ mod tests {
     fn an_input_that_rows_cannot_fill_says_so() {
         let err = rows_to_tensor(&input(DataType::Bytes, vec![-1, 1]), &[vec![1.0]]).unwrap_err();
         assert!(err.to_string().contains("BYTES"), "{err}");
+    }
+
+    /// A generator takes an embedding and a noise vector; a load run has to
+    /// fill both.
+    #[test]
+    fn every_input_of_a_multi_input_model_is_filled() {
+        let metadata = metadata(vec![
+            TensorMetadata {
+                name: "text_embedding".to_string(),
+                datatype: DataType::Fp32,
+                shape: vec![-1, 128],
+            },
+            TensorMetadata {
+                name: "noise".to_string(),
+                datatype: DataType::Fp32,
+                shape: vec![-1, 100],
+            },
+        ]);
+
+        let inputs = synthesize_inputs(&metadata, 4, 7).expect("both inputs are filled");
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].name, "text_embedding");
+        assert_eq!(inputs[0].shape, vec![4, 128]);
+        assert_eq!(inputs[1].name, "noise");
+        assert_eq!(inputs[1].shape, vec![4, 100]);
+        for tensor in &inputs {
+            tensor.validate().expect("a valid tensor");
+        }
+    }
+
+    /// An image input's rows are the flattened pixels, which is what the
+    /// model's own shape says they are.
+    #[test]
+    fn an_image_input_is_filled_from_its_declared_shape() {
+        let metadata = metadata(vec![TensorMetadata {
+            name: "image".to_string(),
+            datatype: DataType::Fp32,
+            shape: vec![-1, 1, 28, 28],
+        }]);
+
+        let inputs = synthesize_inputs(&metadata, 2, 1).expect("filled");
+        assert_eq!(inputs[0].shape, vec![2, 1, 28, 28]);
+        assert_eq!(
+            inputs[0].data.len(),
+            2 * 28 * 28,
+            "one value per pixel per row"
+        );
+    }
+
+    #[test]
+    fn synthesized_inputs_are_reproducible_and_differ_from_each_other() {
+        let metadata = metadata(vec![
+            input(DataType::Fp32, vec![-1, 4]),
+            TensorMetadata {
+                name: "other".to_string(),
+                datatype: DataType::Fp32,
+                shape: vec![-1, 4],
+            },
+        ]);
+
+        let first = synthesize_inputs(&metadata, 2, 3).unwrap();
+        assert_eq!(first, synthesize_inputs(&metadata, 2, 3).unwrap());
+        // Two inputs of the same width must not receive the same numbers.
+        assert_ne!(first[0].data, first[1].data);
+    }
+
+    #[test]
+    fn a_model_without_inputs_cannot_be_filled() {
+        assert!(synthesize_inputs(&metadata(Vec::new()), 1, 1).is_err());
     }
 
     #[test]

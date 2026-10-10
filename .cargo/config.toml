@@ -1,0 +1,40 @@
+# `cargo e2e` runs the end-to-end suite, which drives a real server in a
+# container. It is kept out of `cargo test` because it needs Docker and the
+# server image, and it lives in its own workspace so that its test-only
+# dependencies cannot change feature unification here; see src/e2e/Cargo.toml.
+#
+# One test thread: the tests share a single server container, and a run that
+# asserts on the server's own metrics cannot have another test adding to the
+# counters underneath it.
+[alias]
+e2e = "test --manifest-path src/e2e/Cargo.toml --test flow -- --test-threads=1 --nocapture"
+
+# Link the prebuilt RocksDB staged by scripts/stage-rocksdb-lib.sh rather than
+# recompiling the vendored C++ sources. librocksdb-sys builds roughly 330
+# translation units from its build script, which takes minutes, and the `cc`
+# crate keeps no object cache: anything that invalidates the build script's
+# fingerprint pays the whole cost again, as does a single Ctrl-C. Pointed at an
+# archive, the build script only runs bindgen and finishes in seconds.
+#
+# ROCKSDB_STATIC selects static linking; librocksdb-sys reads only its
+# presence, not its value.
+#
+# Cargo finds this file by walking up from the working directory, so the
+# end-to-end workspace under src/e2e picks it up too and links the same
+# archive. `relative` resolves against this file's parent directory, so the
+# paths below mean the repository root either way.
+#
+# Nothing here is forced, so a value already in the environment wins and
+# `ROCKSDB_COMPILE=1 cargo build` still compiles from source. Docker builds are
+# untouched: .dockerignore drops .cargo/, so they compile the sources as before.
+#
+# LIBCLANG_PATH is deliberately not set here. bindgen runs on every build and
+# its build script reruns when that variable changes, so it needs to be pinned
+# -- but it is already pinned in ~/.cargo/config.toml, which is where the
+# machine-specific libclang location belongs. Setting it in both places would
+# reintroduce exactly the drift being avoided, and cargo cannot merge the two
+# spellings anyway. scripts/stage-rocksdb-lib.sh creates the symlink that
+# pin points at.
+[env]
+ROCKSDB_LIB_DIR = { value = ".cargo/rocksdb", relative = true }
+ROCKSDB_STATIC = "1"

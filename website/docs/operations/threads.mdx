@@ -1,0 +1,49 @@
+---
+id: threads
+title: Using the cores
+sidebar_position: 3
+description: Three thread pools, why they multiply, and why one operator thread is the default.
+---
+
+# Using the cores
+
+There are two thread pools and they multiply:
+
+- **Async workers** (`--worker-threads`, default one per core) decode, queue
+  and answer requests.
+- **Blocking threads** (`--blocking-threads`, default twice the core count)
+  run model code: a batch is handed to one of them, so this bounds how many
+  inferences can execute at once. Tokio's own default is 512, which would let
+  a burst across ten models start 512 inferences at once on a twelve-core
+  machine; that is why it is bounded here.
+- **Operator threads** (`--intra-op-threads`, default 1) are what ONNX Runtime
+  may use *inside* one operator, **per loaded model**.
+
+## Why one operator thread
+
+`0` means "let ONNX Runtime choose", which is one thread per core for *every*
+loaded session: ten models on a twelve-core machine is 120 threads fighting
+over 12 cores, which costs more in contention than it gains in parallelism. So
+the parallelism here comes from serving models and batches side by side, which
+is the right shape for many small CPU models.
+
+A server with one large model and spare cores is the opposite case and wants
+`--intra-op-threads` raised, or `intra_op_threads` set in that model's
+`config.json`. `--parallel-execution` additionally runs independent branches
+of a graph at once, which is worth it for a wide graph such as a large
+ensemble and pointless for a deep chain.
+
+## The plan is logged and published
+
+```text
+INFO galemind: thread plan cpu_count=12 worker_threads=12 blocking_threads=24
+     intra_op_threads=1 parallel_execution=false compute_threads_max=24
+     cpu_mem_arena=false platform="amd64"
+```
+
+If `compute_threads_max` is more than twice `gm_cpu_count` the server warns:
+throughput that stops climbing with concurrency is either a saturated machine
+or an oversubscribed one, and those two numbers say which. The same figures
+are in the [metrics](./metrics.mdx) as `gm_server_worker_threads`,
+`gm_server_blocking_threads`, `gm_server_intra_op_threads` and
+`gm_server_compute_threads_max`.

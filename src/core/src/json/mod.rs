@@ -12,6 +12,7 @@ pub mod tensor;
 
 pub use tensor::{decode, encode, BytesEncoding, BINARY_ENCODING_PARAMETER};
 
+use crate::catalogue::{CatalogueEntry, ModelInfo, VersionInfo};
 use crate::error::InferError;
 use crate::infer::{InferResponse, Parameter, Parameters};
 use crate::model::{ModelMetadata, TensorMetadata};
@@ -29,6 +30,114 @@ pub struct ServerMetadataBody {
     pub name: String,
     pub version: String,
     pub extensions: Vec<String>,
+}
+
+/// `GET /v2/models/list`: every model the server can serve.
+///
+/// Not part of the Predict Protocol v2, which has no catalogue call. The
+/// shape is this server's own, and `count` is included so a caller can check
+/// a truncated read without walking the array.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelListBody {
+    pub count: usize,
+    pub models: Vec<ModelListEntry>,
+}
+
+/// One model in `GET /v2/models/list`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelListEntry {
+    pub name: String,
+    /// Oldest first, in the order the server resolves them.
+    pub versions: Vec<String>,
+    /// The version an unversioned request resolves to.
+    pub latest_version: String,
+    pub platform: String,
+    /// Versions in memory now. Models load lazily, so this changes with
+    /// traffic rather than describing the repository.
+    pub loaded_versions: Vec<String>,
+    /// Whether a request that names no version would be served without a load.
+    pub ready: bool,
+}
+
+impl From<CatalogueEntry> for ModelListEntry {
+    fn from(entry: CatalogueEntry) -> Self {
+        Self {
+            ready: entry.latest_is_loaded(),
+            name: entry.name,
+            versions: entry.versions,
+            latest_version: entry.latest_version,
+            platform: entry.platform,
+            loaded_versions: entry.loaded_versions,
+        }
+    }
+}
+
+/// `GET /v2/models/info/{model_name}`: every version of one model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelInfoBody {
+    pub name: String,
+    /// The version an unversioned request resolves to.
+    pub latest_version: String,
+    pub versions: Vec<ModelVersionBody>,
+}
+
+/// One version in `GET /v2/models/info/{model_name}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelVersionBody {
+    pub version: String,
+    pub platform: String,
+    pub digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_batch_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intra_op_threads: Option<usize>,
+    pub loaded: bool,
+    pub is_latest: bool,
+    /// The signature as the runtime reports it. Empty for a version that is
+    /// not in memory and was not loaded for this call.
+    pub inputs: Vec<MetadataTensor>,
+    pub outputs: Vec<MetadataTensor>,
+}
+
+impl From<VersionInfo> for ModelVersionBody {
+    fn from(version: VersionInfo) -> Self {
+        Self {
+            version: version.version,
+            platform: version.platform,
+            digest: version.digest,
+            size_bytes: version.size_bytes,
+            max_batch_size: version.max_batch_size,
+            intra_op_threads: version.intra_op_threads,
+            loaded: version.loaded,
+            is_latest: version.is_latest,
+            inputs: metadata_tensors(version.inputs),
+            outputs: metadata_tensors(version.outputs),
+        }
+    }
+}
+
+impl From<ModelInfo> for ModelInfoBody {
+    fn from(info: ModelInfo) -> Self {
+        Self {
+            name: info.name,
+            latest_version: info.latest_version,
+            versions: info.versions.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Tensor metadata in the protocol's JSON shape.
+fn metadata_tensors(tensors: Vec<TensorMetadata>) -> Vec<MetadataTensor> {
+    tensors
+        .into_iter()
+        .map(|tensor| MetadataTensor {
+            name: tensor.name,
+            datatype: tensor.datatype.to_string(),
+            shape: tensor.shape,
+        })
+        .collect()
 }
 
 /// `$metadata_tensor`
@@ -52,23 +161,12 @@ pub struct ModelMetadataBody {
 
 impl From<ModelMetadata> for ModelMetadataBody {
     fn from(metadata: ModelMetadata) -> Self {
-        fn tensors(tensors: Vec<TensorMetadata>) -> Vec<MetadataTensor> {
-            tensors
-                .into_iter()
-                .map(|tensor| MetadataTensor {
-                    name: tensor.name,
-                    datatype: tensor.datatype.to_string(),
-                    shape: tensor.shape,
-                })
-                .collect()
-        }
-
         Self {
             name: metadata.name,
             versions: (!metadata.versions.is_empty()).then_some(metadata.versions),
             platform: metadata.platform,
-            inputs: tensors(metadata.inputs),
-            outputs: tensors(metadata.outputs),
+            inputs: metadata_tensors(metadata.inputs),
+            outputs: metadata_tensors(metadata.outputs),
         }
     }
 }

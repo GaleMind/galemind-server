@@ -1,0 +1,33 @@
+[package]
+name = "galemind-e2e"
+description = "End-to-end tests that drive a real GaleMind server in a container"
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# Its own workspace, deliberately outside the server's.
+#
+# Cargo unifies features across every package selected for a build, so while
+# this crate was a member, `cargo test` resolved the shared leaf crates --
+# bitflags, regex, itertools -- differently from `cargo build`. That changed
+# bindgen's fingerprint, which changed the librocksdb-sys build script's, and
+# every alternation between the two commands recompiled RocksDB from source.
+# Out here its test-only dependencies cannot reach the server's resolution.
+#
+# The cost is a separate target directory, so the server stack is compiled
+# again for this crate. Versions below have to be kept in step with
+# [workspace.dependencies] in the root Cargo.toml by hand.
+[workspace]
+
+# Nothing to build: this crate exists only for its tests.
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+galemind-core = { path = "../core" }
+galemind-client = { path = "../client/rust" }
+anyhow = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+testcontainers = "0.28"
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs"] }

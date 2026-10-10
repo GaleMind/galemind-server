@@ -1,0 +1,49 @@
+---
+id: tracing
+title: Following a request
+sidebar_position: 2
+description: One id and one span per request, across both transports.
+---
+
+# Following a request
+
+Every request gets an id and a span, and everything logged while handling it
+is nested inside that span. The id comes from `X-Request-Id` when the caller
+sends one — so a trace can be followed from a gateway's log into this one —
+and is echoed on the response either way, so a caller that sent none can still
+quote the id of a request that went wrong.
+
+```bash
+GALEMIND_LOG=galemind=debug,rest_server=debug,galemind_service=debug \
+  cargo run --release -p galemind -- serve
+
+curl -H 'X-Request-Id: demo-42' -X POST \
+  http://localhost:8000/v2/models/thermal_cnn/infer -d @request.json
+```
+
+```text
+DEBUG request{id=demo-42 method=POST path=/v2/models/thermal_cnn/infer}:
+      rest_server::trace: request received
+DEBUG request{id=demo-42 …}: galemind_service::service: request received
+      request=infer-1 model=thermal_cnn inputs=1 rows=1
+ INFO request{id=demo-42 …}: galemind_cache::lru: loaded model into cache
+      model=thermal_cnn/1 entries=1
+ INFO request{id=demo-42 …}: galemind_service::service: starting batching
+      dispatcher model=thermal_cnn/1
+DEBUG request{id=demo-42 …}: galemind_service::service: request answered
+      request=infer-1 model=thermal_cnn/1 rows=1 elapsed_us=18528
+DEBUG request{id=demo-42 … status=200}: rest_server::trace: request answered
+      elapsed_us=18739
+```
+
+Reading that: 18.7 ms end to end, of which 18.5 ms was the model load this
+request happened to trigger. `--preload` or a warmup takes that out. At `trace`
+the service also logs version resolution and validation separately, and the
+dispatcher logs each batch it forms.
+
+At the default `info` filter a healthy server says nothing per request — one
+answering 50 000 requests a second cannot log two lines each — so the flow is
+off until asked for. A 5xx is logged as a warning whatever the filter.
+
+gRPC calls are traced the same way, under a `grpc` span, taking the id from
+`x-request-id` metadata or from the request's own `id` field.

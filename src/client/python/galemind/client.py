@@ -104,12 +104,66 @@ class InferenceResponse:
         raise KeyError(f"no output named {name!r}; the response holds {available}")
 
 
+def _tensor_metadata(tensors: Sequence[Dict[str, Any]]) -> List[TensorMetadata]:
+    """Reads the protocol's tensor metadata objects."""
+    return [
+        TensorMetadata(name=t["name"], datatype=t["datatype"], shape=list(t["shape"]))
+        for t in tensors
+    ]
+
+
+@dataclass(frozen=True)
+class CatalogueEntry:
+    """One model in `GET /v2/models/list`."""
+
+    name: str
+    versions: List[str]
+    latest_version: str
+    platform: str
+    loaded_versions: List[str]
+    #: Whether a request naming no version would be served without a load.
+    ready: bool
+
+
+@dataclass(frozen=True)
+class VersionInfo:
+    """One version in `GET /v2/models/info/{model}`."""
+
+    version: str
+    platform: str
+    digest: str
+    loaded: bool
+    is_latest: bool
+    inputs: List[TensorMetadata]
+    outputs: List[TensorMetadata]
+    size_bytes: Optional[int] = None
+    max_batch_size: Optional[int] = None
+    intra_op_threads: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    """Every version of one model."""
+
+    name: str
+    latest_version: str
+    versions: List[VersionInfo]
+
+
 class HttpClient:
     """Talks the protocol over HTTP, using only the standard library."""
 
-    def __init__(self, endpoint: str = DEFAULT_HTTP_ENDPOINT, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        endpoint: str = DEFAULT_HTTP_ENDPOINT,
+        timeout: float = 30.0,
+        token: Optional[str] = None,
+    ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
+        #: Sent as `Authorization: Bearer <token>` when the server requires
+        #: one. The server is open unless configured otherwise.
+        self.token = token
 
     # -- the six calls ----------------------------------------------------
 
@@ -132,16 +186,62 @@ class HttpClient:
 
     def model_metadata(self, model: str, version: Optional[str] = None) -> ModelMetadata:
         body = self._get(self._model_path(model, version, ""))
-        tensors = lambda key: [  # noqa: E731 - a local alias reads better here
-            TensorMetadata(name=t["name"], datatype=t["datatype"], shape=list(t["shape"]))
-            for t in body.get(key, [])
-        ]
         return ModelMetadata(
             name=body["name"],
             platform=body["platform"],
             versions=body.get("versions", []),
-            inputs=tensors("inputs"),
-            outputs=tensors("outputs"),
+            inputs=_tensor_metadata(body.get("inputs", [])),
+            outputs=_tensor_metadata(body.get("outputs", [])),
+        )
+
+    # -- the catalogue, which the protocol does not define ----------------
+
+    def model_list(self) -> List[CatalogueEntry]:
+        """Every model the server can serve, from `/v2/models/list`.
+
+        Loads nothing, so a repository larger than the server's model cache
+        can be listed without evicting a model that requests are using.
+        """
+        body = self._get("/v2/models/list")
+        return [
+            CatalogueEntry(
+                name=model["name"],
+                versions=list(model.get("versions", [])),
+                latest_version=model["latest_version"],
+                platform=model.get("platform", ""),
+                loaded_versions=list(model.get("loaded_versions", [])),
+                ready=bool(model.get("ready", False)),
+            )
+            for model in body.get("models", [])
+        ]
+
+    def model_info(self, model: str, load: bool = True) -> ModelInfo:
+        """Every version of one model, from `/v2/models/info/{model}`.
+
+        A signature comes from a loaded session, so by default the server
+        loads each version that is not already in memory. Pass
+        ``load=False`` to skip that: the versions, their settings and their
+        digests come back with empty inputs and outputs.
+        """
+        body = self._get(f"/v2/models/info/{model}?load={'true' if load else 'false'}")
+        return ModelInfo(
+            name=body["name"],
+            latest_version=body["latest_version"],
+            versions=[
+                VersionInfo(
+                    version=version["version"],
+                    platform=version.get("platform", ""),
+                    digest=version.get("digest", ""),
+                    loaded=bool(version.get("loaded", False)),
+                    is_latest=bool(version.get("is_latest", False)),
+                    inputs=_tensor_metadata(version.get("inputs", [])),
+                    outputs=_tensor_metadata(version.get("outputs", [])),
+                    size_bytes=version.get("size_bytes"),
+                    max_batch_size=version.get("max_batch_size"),
+                    intra_op_threads=version.get("intra_op_threads"),
+                )
+                for version in body.get("versions", [])
+            ],
         )
 
     def infer(
@@ -224,9 +324,16 @@ class HttpClient:
     def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(self._request("POST", path, json.dumps(body).encode()))
 
+    def _authorize(self, request: "urllib.request.Request") -> None:
+        if self.token:
+            request.add_header("Authorization", f"Bearer {self.token}")
+
     def _health(self, path: str) -> bool:
         """Reads a health endpoint, where the status code is the whole answer."""
         request = urllib.request.Request(self.endpoint + path, method="GET")
+        # Health endpoints are never authenticated, but a proxy in front of
+        # the server may want the header anyway.
+        self._authorize(request)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return response.status == 200
@@ -241,6 +348,7 @@ class HttpClient:
         request = urllib.request.Request(self.endpoint + path, data=payload, method=method)
         if payload is not None:
             request.add_header("Content-Type", "application/json")
+        self._authorize(request)
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -262,7 +370,9 @@ class GrpcClient:
     Needs ``grpcio`` and the stubs generated by ``make generate``.
     """
 
-    def __init__(self, endpoint: str = DEFAULT_GRPC_ENDPOINT) -> None:
+    def __init__(
+        self, endpoint: str = DEFAULT_GRPC_ENDPOINT, token: Optional[str] = None
+    ) -> None:
         try:
             import grpc  # noqa: F401 - imported for its side effect of existing
 
@@ -278,6 +388,18 @@ class GrpcClient:
         self.endpoint = endpoint.replace("http://", "").replace("https://", "")
         self._channel = grpc.insecure_channel(self.endpoint)
         self._stub = pb_grpc.GRPCInferenceServiceStub(self._channel)
+        # gRPC metadata is HTTP/2 headers, so this is the same
+        # `authorization: Bearer <token>` the HTTP client sends, and the
+        # server checks it against the same authenticator.
+        self._metadata = [("authorization", f"Bearer {token}")] if token else None
+
+    def _call(self, method: str, request: Any) -> Any:
+        """Makes one call, with the credential if there is one.
+
+        Every call goes through here so that a token cannot be forgotten on
+        one of them -- the failure that looks like a server bug.
+        """
+        return getattr(self._stub, method)(request, metadata=self._metadata)
 
     def close(self) -> None:
         self._channel.close()
@@ -289,24 +411,24 @@ class GrpcClient:
         self.close()
 
     def server_live(self) -> bool:
-        return self._stub.ServerLive(self._pb.ServerLiveRequest()).live
+        return self._call("ServerLive", self._pb.ServerLiveRequest()).live
 
     def server_ready(self) -> bool:
-        return self._stub.ServerReady(self._pb.ServerReadyRequest()).ready
+        return self._call("ServerReady", self._pb.ServerReadyRequest()).ready
 
     def model_ready(self, model: str, version: Optional[str] = None) -> bool:
         request = self._pb.ModelReadyRequest(name=model, version=version or "")
-        return self._stub.ModelReady(request).ready
+        return self._call("ModelReady", request).ready
 
     def server_metadata(self) -> ServerMetadata:
-        answer = self._stub.ServerMetadata(self._pb.ServerMetadataRequest())
+        answer = self._call("ServerMetadata", self._pb.ServerMetadataRequest())
         return ServerMetadata(
             name=answer.name, version=answer.version, extensions=list(answer.extensions)
         )
 
     def model_metadata(self, model: str, version: Optional[str] = None) -> ModelMetadata:
         request = self._pb.ModelMetadataRequest(name=model, version=version or "")
-        answer = self._stub.ModelMetadata(request)
+        answer = self._call("ModelMetadata", request)
         convert = lambda ts: [  # noqa: E731
             TensorMetadata(name=t.name, datatype=t.datatype, shape=list(t.shape)) for t in ts
         ]
@@ -316,6 +438,56 @@ class GrpcClient:
             versions=list(answer.versions),
             inputs=convert(answer.inputs),
             outputs=convert(answer.outputs),
+        )
+
+    # -- the catalogue, which the protocol does not define ----------------
+
+    def model_list(self) -> List[CatalogueEntry]:
+        """Every model the server can serve, from `/v2/models/list`.
+
+        Loads nothing, so a repository larger than the server's model cache
+        can be listed without evicting a model that requests are using.
+        """
+        body = self._get("/v2/models/list")
+        return [
+            CatalogueEntry(
+                name=model["name"],
+                versions=list(model.get("versions", [])),
+                latest_version=model["latest_version"],
+                platform=model.get("platform", ""),
+                loaded_versions=list(model.get("loaded_versions", [])),
+                ready=bool(model.get("ready", False)),
+            )
+            for model in body.get("models", [])
+        ]
+
+    def model_info(self, model: str, load: bool = True) -> ModelInfo:
+        """Every version of one model, from `/v2/models/info/{model}`.
+
+        A signature comes from a loaded session, so by default the server
+        loads each version that is not already in memory. Pass
+        ``load=False`` to skip that: the versions, their settings and their
+        digests come back with empty inputs and outputs.
+        """
+        body = self._get(f"/v2/models/info/{model}?load={'true' if load else 'false'}")
+        return ModelInfo(
+            name=body["name"],
+            latest_version=body["latest_version"],
+            versions=[
+                VersionInfo(
+                    version=version["version"],
+                    platform=version.get("platform", ""),
+                    digest=version.get("digest", ""),
+                    loaded=bool(version.get("loaded", False)),
+                    is_latest=bool(version.get("is_latest", False)),
+                    inputs=_tensor_metadata(version.get("inputs", [])),
+                    outputs=_tensor_metadata(version.get("outputs", [])),
+                    size_bytes=version.get("size_bytes"),
+                    max_batch_size=version.get("max_batch_size"),
+                    intra_op_threads=version.get("intra_op_threads"),
+                )
+                for version in body.get("versions", [])
+            ],
         )
 
     def infer(
@@ -351,7 +523,7 @@ class GrpcClient:
                 self._pb.ModelInferRequest.InferRequestedOutputTensor(name=name)
             )
 
-        answer = self._stub.ModelInfer(request)
+        answer = self._call("ModelInfer", request)
         tensors = []
         for index, output in enumerate(answer.outputs):
             count = element_count(list(output.shape))

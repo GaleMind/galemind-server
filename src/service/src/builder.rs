@@ -1,6 +1,7 @@
 //! Assembling an inference service from its parts.
 
 use crate::registry::ModelRegistry;
+use crate::runtime::RuntimeInfo;
 use crate::service::InferenceService;
 use galemind_batching::{AdaptiveBatchPolicy, BatchPolicy, DispatcherConfig};
 use galemind_cache::{LruTtlCache, LruTtlConfig};
@@ -28,6 +29,7 @@ pub struct ServiceBuilder {
     clock: Arc<dyn Clock>,
     cache_config: LruTtlConfig,
     dispatcher_config: DispatcherConfig,
+    runtime: Option<RuntimeInfo>,
 }
 
 impl ServiceBuilder {
@@ -40,6 +42,7 @@ impl ServiceBuilder {
             clock: Arc::new(SystemClock::new()),
             cache_config: LruTtlConfig::default(),
             dispatcher_config: DispatcherConfig::default(),
+            runtime: None,
         }
     }
 
@@ -79,6 +82,13 @@ impl ServiceBuilder {
         self
     }
 
+    /// Records the thread plan the binary actually started with, so that it is
+    /// reported in the metrics rather than guessed at from the machine.
+    pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
     pub fn build(self) -> Result<Arc<InferenceService>> {
         if self.backends.is_empty() {
             return Err(InferError::Internal(
@@ -110,13 +120,18 @@ impl ServiceBuilder {
             "built inference service"
         );
 
-        Ok(Arc::new(InferenceService::new(
-            Arc::new(ModelRegistry::new(store)),
+        let mut service = InferenceService::new(
+            Arc::new(ModelRegistry::new(Arc::clone(&store))),
+            store,
             Arc::new(cache) as Arc<dyn ModelCache>,
             policy,
             self.clock,
             self.dispatcher_config,
-        )))
+        );
+        if let Some(runtime) = self.runtime {
+            service.set_runtime_info(runtime);
+        }
+        Ok(Arc::new(service))
     }
 }
 

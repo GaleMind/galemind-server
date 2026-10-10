@@ -4,7 +4,7 @@ use crate::config::read_model_config;
 use crate::digest::sha256_hex;
 use crate::platform::{candidate_file_names, platform_for_file};
 use async_trait::async_trait;
-use galemind_core::{InferError, ModelArtifact, ModelKey, ModelStore};
+use galemind_core::{InferError, ModelArtifact, ModelDescriptor, ModelKey, ModelStore};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -147,6 +147,33 @@ impl ModelStore for FsModelStore {
             digest: sha256_hex(&bytes),
             config,
             bytes,
+        })
+    }
+
+    /// Describes a version by stat-ing its file rather than reading it.
+    ///
+    /// The digest is left empty: it is a hash of the bytes, and hashing them
+    /// means reading them, which is the cost this exists to avoid. A caller
+    /// that needs the digest of a filesystem artifact fetches it.
+    async fn describe(&self, key: &ModelKey) -> Result<ModelDescriptor> {
+        let path = self.locate(key).await?;
+        let platform = platform_for_file(&path)
+            .ok_or_else(|| {
+                InferError::Unsupported(format!("unrecognised model file {}", path.display()))
+            })?
+            .to_string();
+        let size_bytes = tokio::fs::metadata(&path)
+            .await
+            .map(|metadata| metadata.len() as usize)
+            .ok();
+        let config = read_model_config(&self.root.join(&key.name).join("config.json")).await?;
+
+        Ok(ModelDescriptor {
+            key: key.clone(),
+            platform: config.platform.clone().unwrap_or(platform),
+            digest: String::new(),
+            config,
+            size_bytes,
         })
     }
 }

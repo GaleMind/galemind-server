@@ -1,0 +1,48 @@
+---
+id: gmctl
+title: gmctl
+sidebar_position: 1
+description: The command line, every subcommand and the global flags.
+---
+
+# gmctl
+
+The client ships as a library and as a command line. It defaults to
+`http://127.0.0.1:8000` over HTTP and `http://127.0.0.1:8001` over gRPC.
+
+```bash
+gmctl live                                   # exits non-zero when it is not
+gmctl ready --model building_energy
+gmctl info                                   # the server's name and version
+gmctl models                                 # the catalogue
+gmctl describe occupancy_mlp                 # every version, with metadata
+gmctl describe stackgan_stage2 --no-load     # without loading anything
+gmctl metadata building_energy
+gmctl infer building_energy --row 1800,30,-4,18,22,1,0,40
+gmctl infer stackgan_stage1 --rows 2         # generated rows fill every input
+gmctl metrics --filter inference --watch 2
+gmctl load building_energy -c 64 -n 10000
+```
+
+## Global flags
+
+| Flag | |
+|---|---|
+| `--endpoint` | The server; defaults by transport |
+| `--transport http \| http2 \| grpc` | HTTP/1.1, HTTP/2 on the same port, or gRPC |
+| `--json` | Print what a script or a timeseries store wants, not a table |
+| `--token` | A bearer token, on either transport. Prefer `GALEMIND_TOKEN`: an argument is visible in the process list |
+
+Every command takes `--json`.
+
+## Rows
+
+`--row` addresses a model with one input. `--rows N` generates rows for
+**every** input the model declares, which is how a generator taking an
+embedding and a noise vector is driven as easily as a feature matrix.
+
+## Load
+
+`gmctl load` has a [page of its own](../operations/load-testing.mdx) — the
+concurrency, the transport, the processes and the socket ceiling all change
+what is being measured.

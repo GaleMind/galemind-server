@@ -1,0 +1,95 @@
+---
+id: python
+title: Python client
+sidebar_position: 3
+description: A Predict Protocol v2 client whose HTTP side needs only the standard library.
+---
+
+# The Python client
+
+```bash
+cd src/client/python
+pip install -e .            # HTTP only, standard library
+pip install -e '.[grpc]'    # add the gRPC client
+pip install -e '.[dev]'     # add pytest and the stub generator
+```
+
+```python
+from galemind import HttpClient
+
+client = HttpClient("http://localhost:8000")
+assert client.server_ready()
+
+# The model's metadata supplies the input name, datatype and row width,
+# so only the numbers are needed here.
+response = client.predict("building_energy", [
+    [1800, 30, -4, 18, 22, 1, 0, 40],   # a large, poorly insulated office
+    [55, 2, 18, 14, 21, 5, 1, 600],     # a small, well insulated flat
+])
+print(response.output("kwh").data)
+```
+
+## What the server can serve
+
+The catalogue endpoints are HTTP extensions, not part of the protocol, so they
+exist on `HttpClient` only:
+
+```python
+for model in client.model_list():
+    print(model.name, model.versions, "latest:", model.latest_version,
+          "ready:", model.ready)
+
+info = client.model_info("occupancy_mlp")          # loads each version
+for version in info.versions:
+    print(version.version, version.size_bytes, version.digest[:8],
+          [(t.name, t.datatype, t.shape) for t in version.inputs])
+
+client.model_info("stackgan_stage2", load=False)   # settings only, no loads
+```
+
+## Authentication
+
+```python
+client = HttpClient("http://localhost:8000", token="s3cret")
+
+with GrpcClient("127.0.0.1:8001", token="s3cret") as grpc_client:
+    grpc_client.model_metadata("building_energy")
+```
+
+The token goes on every request, on either transport — gRPC metadata is
+HTTP/2 headers, so it is the same header, checked against the same
+authenticator. Health and readiness need no token. See
+[Authentication](../api/authentication.mdx).
+
+## Tensors
+
+For full control, build them directly:
+
+```python
+from galemind import HttpClient, Tensor
+
+client = HttpClient()
+features = Tensor(
+    name="features",
+    shape=[1, 8],
+    datatype="FP32",
+    data=[[1800, 30, -4, 18, 22, 1, 0, 40]],   # nested or flat, both work
+)
+response = client.infer("building_energy", [features], outputs=["kwh"])
+```
+
+Over gRPC, after `make generate`:
+
+```python
+from galemind import GrpcClient, Tensor
+
+with GrpcClient("127.0.0.1:8001") as client:
+    print(client.model_metadata("building_energy").outputs)
+```
+
+## Developing it
+
+```bash
+make generate   # regenerate the gRPC stubs from ../../grpc_server/proto
+make test       # run the client tests
+```

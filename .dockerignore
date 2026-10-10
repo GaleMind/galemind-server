@@ -1,0 +1,9 @@
+target/
+.venv/
+data/
+.git/
+.github/
+docs/
+*.log
+__pycache__/
+.cargo/

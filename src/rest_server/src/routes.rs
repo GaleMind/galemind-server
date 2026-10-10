@@ -1,19 +1,21 @@
 //! The eight URLs the Predict Protocol v2 defines over HTTP.
 
 use crate::error::ApiError;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use galemind_core::json::{
     self, tensor as tensor_json, ErrorBody, InferenceRequestBody, InferenceResponseBody,
-    JsonParameters, ModelMetadataBody, ServerMetadataBody,
+    JsonParameters, ModelInfoBody, ModelListBody, ModelListEntry, ModelMetadataBody,
+    ServerMetadataBody,
 };
 use galemind_core::{
     DataType, InferError, InferRequest, Inference, MetricsSource, ModelRef, Parameter, Parameters,
     RequestedOutput, Tensor, SERVER_NAME, SERVER_VERSION,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -22,16 +24,24 @@ use tracing::debug;
 /// What every handler shares.
 pub type AppState = Arc<dyn Inference>;
 
-/// Builds the router for the protocol's URLs.
+/// Builds the router for the protocol's URLs, and for the two catalogue URLs
+/// this server adds to them.
 ///
 /// The version is a literal path segment, not a parameter: a request to
 /// `/v3/health/live` is a 404, where capturing the segment would have answered
 /// any version at all.
+///
+/// `list` and `info` are therefore reserved model names: a static segment
+/// wins over a parameter, so `/v2/models/list` is the catalogue and never the
+/// metadata of a model called `list`. Nothing else is shadowed, and the
+/// protocol's own URLs are untouched.
 pub fn router(inference: AppState) -> Router {
     Router::new()
         .route("/v2", get(server_metadata))
         .route("/v2/health/live", get(server_live))
         .route("/v2/health/ready", get(server_ready))
+        .route("/v2/models/list", get(model_list))
+        .route("/v2/models/info/{model_name}", get(model_info))
         .route("/v2/models/{model_name}", get(model_metadata))
         .route("/v2/models/{model_name}/ready", get(model_ready))
         .route("/v2/models/{model_name}/infer", post(model_infer))
@@ -98,6 +108,58 @@ async fn server_metadata() -> Json<ServerMetadataBody> {
         // No protocol extensions are implemented.
         extensions: Vec::new(),
     })
+}
+
+/// `GET /v2/models/list`
+///
+/// Loads nothing: a repository with more models than the cache holds can be
+/// listed without evicting a model that requests are using.
+async fn model_list(State(inference): State<AppState>) -> Result<Json<ModelListBody>, ApiError> {
+    let entries: Vec<ModelListEntry> = inference
+        .catalogue()
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+
+    debug!(models = entries.len(), "listed models");
+    Ok(Json(ModelListBody {
+        count: entries.len(),
+        models: entries,
+    }))
+}
+
+/// What `GET /v2/models/info/{model_name}` accepts.
+#[derive(Debug, Default, Deserialize)]
+pub struct ModelInfoQuery {
+    /// Load every version that is not already loaded, so that each reports its
+    /// input and output signature.
+    ///
+    /// On by default, because a signature is what the call is for. A caller
+    /// that only wants the versions and their settings passes `?load=false`
+    /// and pays no loads -- worth doing against a server whose models are
+    /// large and whose cache is smaller than the model being described.
+    #[serde(default = "load_by_default")]
+    load: bool,
+}
+
+fn load_by_default() -> bool {
+    true
+}
+
+/// `GET /v2/models/info/{model_name}`
+///
+/// Every version of one model: its settings, its digest, whether it is
+/// loaded, which version an unversioned request resolves to, and each
+/// version's signature.
+async fn model_info(
+    State(inference): State<AppState>,
+    Path(model_name): Path<String>,
+    Query(query): Query<ModelInfoQuery>,
+) -> Result<Json<ModelInfoBody>, ApiError> {
+    let info = inference.model_info(&model_name, query.load).await?;
+    debug!(model = %model_name, versions = info.versions.len(), "described model");
+    Ok(Json(info.into()))
 }
 
 async fn model_metadata(

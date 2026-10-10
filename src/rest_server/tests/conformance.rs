@@ -468,3 +468,152 @@ async fn a_server_built_without_metrics_does_not_serve_them() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// -- the catalogue endpoints, which the protocol does not define ------------
+
+#[tokio::test]
+async fn the_catalogue_lists_every_model_with_its_versions_and_newest() {
+    let (status, body) = get("/v2/models/list").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let body = parse(&body);
+    let models = body["models"].as_array().expect("an array of models");
+    assert_eq!(
+        body["count"].as_u64(),
+        Some(models.len() as u64),
+        "the count matches the array"
+    );
+    assert!(
+        models.len() >= 2,
+        "the committed repository holds at least the two energy models: {body}"
+    );
+
+    let energy = models
+        .iter()
+        .find(|model| model["name"] == "building_energy")
+        .expect("building_energy is listed");
+    assert_eq!(energy["platform"], "onnx_onnxv1");
+    assert_eq!(energy["versions"], json!(["1"]));
+    assert_eq!(energy["latest_version"], "1");
+    // Nothing was inferred, so nothing is loaded: listing must not load.
+    assert_eq!(energy["loaded_versions"], json!([]));
+    assert_eq!(energy["ready"], json!(false));
+}
+
+#[tokio::test]
+async fn model_info_reports_every_version_and_its_signature() {
+    let (status, body) = get("/v2/models/info/building_energy").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let body = parse(&body);
+    assert_eq!(body["name"], "building_energy");
+    assert_eq!(body["latest_version"], "1");
+
+    let versions = body["versions"].as_array().expect("an array of versions");
+    assert_eq!(versions.len(), 1, "{body}");
+    let version = &versions[0];
+    assert_eq!(version["version"], "1");
+    assert_eq!(version["platform"], "onnx_onnxv1");
+    assert_eq!(version["is_latest"], json!(true));
+    // Loading is the default, so the signature is reported.
+    assert_eq!(version["loaded"], json!(true));
+    assert_eq!(version["inputs"][0]["name"], "features");
+    assert_eq!(version["inputs"][0]["datatype"], "FP32");
+    assert_eq!(version["inputs"][0]["shape"], json!([-1, 8]));
+    assert_eq!(version["outputs"][0]["name"], "kwh");
+    assert!(
+        version["size_bytes"].as_u64().unwrap_or(0) > 0,
+        "the artifact's size is known: {version}"
+    );
+}
+
+/// A caller that only wants the versions and their settings should not have to
+/// pay for a load of a model larger than the cache.
+#[tokio::test]
+async fn model_info_can_be_asked_not_to_load_anything() {
+    let (status, body) = get("/v2/models/info/building_energy?load=false").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let version = &parse(&body)["versions"][0];
+    assert_eq!(version["version"], "1");
+    assert_eq!(version["loaded"], json!(false));
+    assert_eq!(
+        version["inputs"],
+        json!([]),
+        "a signature comes from a loaded session, and nothing was loaded"
+    );
+}
+
+#[tokio::test]
+async fn model_info_for_an_unknown_model_is_a_protocol_error() {
+    let (status, body) = get("/v2/models/info/ghost").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(parse(&body)["error"].is_string(), "{body:?}");
+}
+
+/// `list` and `info` are static segments, so they win over the metadata URL's
+/// parameter. The protocol's own URLs must be unaffected by that.
+#[tokio::test]
+async fn the_catalogue_urls_do_not_shadow_the_protocols_model_urls() {
+    let (status, body) = get("/v2/models/building_energy").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(parse(&body)["name"], "building_energy");
+
+    let (status, _) = get("/v2/models/building_energy/ready").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// -- per-request tracing ---------------------------------------------------
+
+#[tokio::test]
+async fn every_response_carries_a_request_id() {
+    let response = app()
+        .await
+        .oneshot(Request::get("/v2/health/live").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("an id is echoed");
+    assert!(!id.is_empty());
+}
+
+#[tokio::test]
+async fn a_callers_request_id_is_echoed_back() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::get("/v2/health/live")
+                .header("x-request-id", "gateway-99")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("gateway-99")
+    );
+}
+
+/// A request that never reaches a handler is still traced, which is the case
+/// that matters: an unknown URL is what a misconfigured client sends.
+#[tokio::test]
+async fn a_request_for_an_unknown_url_is_traced_too() {
+    let response = app()
+        .await
+        .oneshot(Request::get("/v2/nope").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(response.headers().contains_key("x-request-id"));
+}

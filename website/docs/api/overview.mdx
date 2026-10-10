@@ -1,0 +1,80 @@
+---
+id: overview
+title: Predict Protocol v2
+sidebar_label: Overview
+sidebar_position: 1
+description: The eight URLs of the protocol, an inference request, and the errors.
+---
+
+# The API
+
+The eight URLs of the protocol, and nothing else under `/v2`:
+
+```text
+GET  /v2                                               server metadata
+GET  /v2/health/live                                   200 or 4xx, no body
+GET  /v2/health/ready
+GET  /v2/models/{model}                                model metadata
+GET  /v2/models/{model}/ready
+POST /v2/models/{model}/infer
+GET  /v2/models/{model}/versions/{version}
+GET  /v2/models/{model}/versions/{version}/ready
+POST /v2/models/{model}/versions/{version}/infer
+```
+
+The version in the path is a literal segment, not a parameter:
+`/v3/health/live` is a 404 rather than an answer about a protocol version that
+does not exist.
+
+## An inference request
+
+```bash
+curl -s -X POST http://localhost:8000/v2/models/building_energy/infer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "req-1",
+    "inputs": [{
+      "name": "features",
+      "shape": [2, 8],
+      "datatype": "FP32",
+      "data": [1800,30,-4,18,22,1,0,40,
+                 55, 2,18,14,21,5,1,600]
+    }]
+  }'
+```
+
+```json
+{
+  "model_name": "building_energy",
+  "model_version": "1",
+  "id": "req-1",
+  "outputs": [
+    {"name": "kwh", "shape": [2, 1], "datatype": "FP32", "data": [2633.06, 16.72]}
+  ]
+}
+```
+
+`outputs` may be given in the request to ask for a subset.
+
+## Errors
+
+The protocol's error object — a body of `{"error": "..."}` — with the status
+the failure deserves:
+
+| Status | When |
+|---|---|
+| 400 | A request the model cannot accept |
+| 401, 403 | [Authentication](./authentication.mdx) |
+| 404 | A model or version that does not exist |
+| 503 | The queue is full: `overloaded` |
+| 504 | A request timed out in the queue |
+
+## HTTP/1.1 and HTTP/2
+
+The same port serves both. HTTP/2 has no negotiation without TLS, so a client
+that wants it sends the preface and the server answers it — `curl
+--http2-prior-knowledge`, or `gmctl --transport http2`. It is the same URLs
+and the same bodies; what changes is that requests become streams on a shared
+connection instead of each holding its own, which is what makes ten thousand
+of them in flight cost a few dozen sockets. See [Load
+testing](../operations/load-testing.mdx#one-socket-per-request-or-many-requests-per-socket).

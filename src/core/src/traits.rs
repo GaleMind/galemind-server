@@ -4,6 +4,7 @@
 //! layers and the orchestration layer depend on behaviour rather than on a
 //! concrete runtime, database or framework.
 
+use crate::catalogue::{CatalogueEntry, ModelDescriptor, ModelInfo};
 use crate::error::InferError;
 use crate::infer::{InferRequest, InferResponse};
 use crate::model::{ModelArtifact, ModelKey, ModelMetadata};
@@ -51,6 +52,23 @@ pub trait ModelStore: Send + Sync {
 
     /// Fetches a model's bytes and settings.
     async fn fetch(&self, key: &ModelKey) -> Result<ModelArtifact>;
+
+    /// Everything about a version except its bytes.
+    ///
+    /// Listing a repository asks this for every version, so a store that keeps
+    /// metadata apart from artifacts should answer it without reading the
+    /// artifact: the default implementation falls back to [`Self::fetch`],
+    /// which is correct but reads every byte of every model.
+    async fn describe(&self, key: &ModelKey) -> Result<ModelDescriptor> {
+        let artifact = self.fetch(key).await?;
+        Ok(ModelDescriptor {
+            size_bytes: Some(artifact.bytes.len()),
+            key: artifact.key,
+            platform: artifact.platform,
+            digest: artifact.digest,
+            config: artifact.config,
+        })
+    }
 }
 
 /// Write access, implemented by stores that can be populated from elsewhere.
@@ -98,6 +116,14 @@ pub trait ModelCache: Send + Sync {
 
     /// Evicts every entry that has outlived its idle time-to-live.
     async fn sweep(&self) -> usize;
+
+    /// Which models are resident right now, loading nothing.
+    ///
+    /// Reporting whether a model is loaded must not load it, which is why this
+    /// exists alongside [`Self::get`]: answering "is this ready" with a `get`
+    /// would make listing a repository larger than the cache evict models that
+    /// requests are using.
+    fn loaded_keys(&self) -> Vec<ModelKey>;
 
     fn stats(&self) -> CacheStats;
 }
@@ -152,4 +178,17 @@ pub trait Inference: Send + Sync {
 
     /// Every model version the server knows about.
     async fn models(&self) -> Result<Vec<ModelKey>>;
+
+    /// Every model, with its versions and which of them are loaded.
+    ///
+    /// Loads nothing: a repository larger than the model cache can be listed
+    /// without evicting a model that requests are using.
+    async fn catalogue(&self) -> Result<Vec<CatalogueEntry>>;
+
+    /// Every version of one model.
+    ///
+    /// With `load`, each version is loaded if it is not already, so that every
+    /// version reports its input and output signature. Without it, only
+    /// versions already in memory carry one.
+    async fn model_info(&self, name: &str, load: bool) -> Result<ModelInfo>;
 }

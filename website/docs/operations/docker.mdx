@@ -1,0 +1,42 @@
+---
+id: docker
+title: Docker
+sidebar_position: 6
+description: The image, what it sets, and the load service beside it.
+---
+
+# Docker
+
+```bash
+docker compose build server
+docker compose up server
+```
+
+The image is multi-stage, runs as a non-root user, carries `gmctl` so the
+container can check its own health, and sets `MALLOC_ARENA_MAX=2` — which is
+the single biggest lever on resident memory and can only be set in the
+environment, because glibc reads it before `main` runs. See
+[Memory](./memory.mdx).
+
+The repository is baked in at `/app/models`; mount over it to serve your own.
+
+`docker-compose.yml` also defines a `load` service that runs `gmctl load`
+against the server and writes its report to `./reports`:
+
+```bash
+LOAD_MODEL=stackgan_stage1 LOAD_CONCURRENCY=32 docker compose run --rm load
+```
+
+## Things worth setting in a container
+
+| | Why |
+|---|---|
+| `MALLOC_ARENA_MAX=2` | Already set in the image; keep it |
+| `GALEMIND_CACHE_CAPACITY` | Must cover the repository, or models churn |
+| `GALEMIND_PRELOAD=true` | A readiness probe that means "no request will pay for a load" |
+| `GALEMIND_LISTEN_BACKLOG` and `net.core.somaxconn` | For a port that many clients connect to at once |
+| `GALEMIND_AUTH_TOKEN` | Through a secret, not the command line |
+
+Health probes need no credentials even with a token configured, so
+`/v2/health/ready` works as a readiness probe unchanged — see
+[Authentication](../api/authentication.mdx#what-stays-open).

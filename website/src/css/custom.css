@@ -1,0 +1,48 @@
+/**
+ * Any CSS included here will be global. The classic template bundles Infima
+ * by default, which is a CSS framework designed for content-centric sites.
+ */
+
+/* A cool slate-blue, for a server whose name is a wind. */
+:root {
+  --ifm-color-primary: #2a6fa8;
+  --ifm-color-primary-dark: #266497;
+  --ifm-color-primary-darker: #245e8f;
+  --ifm-color-primary-darkest: #1d4d75;
+  --ifm-color-primary-light: #2e7ab9;
+  --ifm-color-primary-lighter: #3080c1;
+  --ifm-color-primary-lightest: #4b95ce;
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-monospace: ui-monospace, SFMono-Regular, 'SF Mono', Menlo,
+    Consolas, 'Liberation Mono', monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+/* Lighter in the dark, where the saturated version vibrates. */
+[data-theme='dark'] {
+  --ifm-color-primary: #6cb6e8;
+  --ifm-color-primary-dark: #4ea5e2;
+  --ifm-color-primary-darker: #3f9ddf;
+  --ifm-color-primary-darkest: #1d80c4;
+  --ifm-color-primary-light: #8ac7ee;
+  --ifm-color-primary-lighter: #99cef1;
+  --ifm-color-primary-lightest: #c3e2f7;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* These docs are mostly tables of options and measurements, and the default
+   table is wider than its content and centred in a way that makes columns
+   hard to follow. */
+.markdown table {
+  display: table;
+  width: 100%;
+}
+
+.markdown table th {
+  text-align: left;
+}
+
+/* Numbers in a table read better aligned on their digits. */
+.markdown table td code {
+  white-space: nowrap;
+}

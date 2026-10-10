@@ -114,6 +114,10 @@ impl ModelCache for StaticCache {
     async fn sweep(&self) -> usize {
         0
     }
+    fn loaded_keys(&self) -> Vec<ModelKey> {
+        // This cache holds no keys of its own: it answers for any model.
+        Vec::new()
+    }
     fn stats(&self) -> CacheStats {
         CacheStats::default()
     }

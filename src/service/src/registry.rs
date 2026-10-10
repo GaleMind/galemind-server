@@ -55,6 +55,16 @@ impl ModelRegistry {
             .collect()
     }
 
+    /// Every model and its versions, oldest version first.
+    pub async fn models(&self) -> Vec<(String, Vec<String>)> {
+        self.models
+            .read()
+            .await
+            .iter()
+            .map(|(name, versions)| (name.clone(), versions.clone()))
+            .collect()
+    }
+
     /// Versions of one model, oldest first.
     pub async fn versions(&self, name: &str) -> Option<Vec<String>> {
         self.models.read().await.get(name).cloned()

@@ -1,0 +1,7 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 8,
+  "description": "StackGAN stage I: 64x64 image from an embedding and noise.",
+  "synthetic": true,
+  "note": "Weights are random; the shapes and the cost are real, the predictions are not."
+}

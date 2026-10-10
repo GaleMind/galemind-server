@@ -8,6 +8,7 @@ against our server's particular behaviour.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Iterator, List, Tuple
@@ -26,6 +27,77 @@ MODEL_METADATA = {
     "platform": "onnx_onnxv1",
     "inputs": [{"name": "features", "datatype": "FP32", "shape": [-1, 8]}],
     "outputs": [{"name": "kwh", "datatype": "FP32", "shape": [-1, 1]}],
+}
+
+MODEL_LIST = {
+    "count": 2,
+    "models": [
+        {
+            "name": "building_energy",
+            "versions": ["1"],
+            "latest_version": "1",
+            "platform": "onnx_onnxv1",
+            "loaded_versions": ["1"],
+            "ready": True,
+        },
+        {
+            "name": "occupancy_mlp",
+            "versions": ["1", "2"],
+            "latest_version": "2",
+            "platform": "onnx_onnxv1",
+            "loaded_versions": [],
+            "ready": False,
+        },
+    ],
+}
+
+#: What `?load=false` returns: the settings, and no signature, since a
+#: signature comes from a loaded session.
+MODEL_INFO_UNLOADED = {
+    "name": "occupancy_mlp",
+    "latest_version": "2",
+    "versions": [
+        {
+            "version": "1",
+            "platform": "onnx_onnxv1",
+            "digest": "cc458d97",
+            "size_bytes": 4135,
+            "max_batch_size": 32,
+            "loaded": False,
+            "is_latest": False,
+            "inputs": [],
+            "outputs": [],
+        },
+        {
+            "version": "2",
+            "platform": "onnx_onnxv1",
+            "digest": "46aa0842",
+            "size_bytes": 11563,
+            "max_batch_size": 32,
+            "loaded": False,
+            "is_latest": True,
+            "inputs": [],
+            "outputs": [],
+        },
+    ],
+}
+
+MODEL_INFO_LOADED = {
+    "name": "building_energy",
+    "latest_version": "1",
+    "versions": [
+        {
+            "version": "1",
+            "platform": "onnx_onnxv1",
+            "digest": "a1b2c3d4",
+            "size_bytes": 199_401,
+            "max_batch_size": 32,
+            "loaded": True,
+            "is_latest": True,
+            "inputs": MODEL_METADATA["inputs"],
+            "outputs": MODEL_METADATA["outputs"],
+        }
+    ],
 }
 
 
@@ -61,6 +133,14 @@ class Handler(BaseHTTPRequestHandler):
             "/v2/models/building_energy/versions/1",
         ):
             self._send(200, MODEL_METADATA)
+        elif self.path == "/v2/models/list":
+            self._send(200, MODEL_LIST)
+        elif self.path.startswith("/v2/models/info/occupancy_mlp"):
+            self._send(200, MODEL_INFO_UNLOADED)
+        elif self.path.startswith("/v2/models/info/building_energy"):
+            self._send(200, MODEL_INFO_LOADED)
+        elif self.path.startswith("/v2/models/info/ghost"):
+            self._send(404, {"error": "model 'ghost' is not known to this server"})
         elif self.path == "/metrics":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -214,6 +294,63 @@ def test_model_metadata_describes_the_inputs_and_outputs(client):
     assert metadata.sole_input.batchable
 
 
+def test_the_catalogue_lists_models_with_their_versions(client):
+    models = client.model_list()
+
+    assert [m.name for m in models] == ["building_energy", "occupancy_mlp"]
+    assert models[0].ready is True
+    assert models[0].loaded_versions == ["1"]
+
+    versioned = models[1]
+    assert versioned.versions == ["1", "2"]
+    # An unversioned request resolves to the newest.
+    assert versioned.latest_version == "2"
+    assert versioned.ready is False
+
+
+def test_model_info_reports_every_version_and_its_signature(client):
+    info = client.model_info("building_energy")
+    assert info.latest_version == "1"
+
+    version = info.versions[0]
+    assert version.is_latest is True
+    assert version.loaded is True
+    assert version.size_bytes == 199_401
+    assert version.max_batch_size == 32
+    assert version.inputs[0].name == "features"
+    assert version.outputs[0].name == "kwh"
+    # Loading is the default, and the server is told so explicitly.
+    assert RECEIVED[-1][1] == "/v2/models/info/building_energy?load=true"
+
+
+def test_model_info_can_be_asked_not_to_load_anything(client):
+    info = client.model_info("occupancy_mlp", load=False)
+
+    assert RECEIVED[-1][1] == "/v2/models/info/occupancy_mlp?load=false"
+    assert [v.version for v in info.versions] == ["1", "2"]
+    assert [v.is_latest for v in info.versions] == [False, True]
+    # No load means no session, and a signature comes from a session.
+    assert all(v.inputs == [] and v.outputs == [] for v in info.versions)
+    # The settings and the digest are still reported.
+    assert info.versions[0].digest == "cc458d97"
+    assert info.versions[1].size_bytes == 11_563
+
+
+def test_an_unknown_model_keeps_the_servers_wording(client):
+    with pytest.raises(InferenceError) as raised:
+        client.model_info("ghost")
+    assert "ghost" in str(raised.value)
+    assert raised.value.is_client_error
+
+
+def test_a_bearer_token_is_sent_when_one_is_configured(client):
+    authenticated = HttpClient(client.endpoint, token="s3cret")
+    # The stub server does not check it; what matters here is that the client
+    # sends it on an ordinary call rather than only on a dedicated one.
+    assert authenticated.model_metadata("building_energy").platform == "onnx_onnxv1"
+    assert authenticated.token == "s3cret"
+
+
 def test_a_version_is_put_in_the_url(client):
     client.model_metadata("building_energy", version="1")
     assert RECEIVED[-1][1] == "/v2/models/building_energy/versions/1"
@@ -279,3 +416,39 @@ def test_an_unreachable_server_is_reported_clearly():
 
 def test_metrics_are_returned_as_text(client):
     assert "gm_inference_request_success" in client.metrics()
+
+
+def test_a_grpc_client_sends_the_token_as_metadata(monkeypatch):
+    """The token has to reach the gRPC port too, now that it is checked.
+
+    Built without grpcio by standing in for the channel and the stub, so the
+    test asserts what every call carries rather than that grpcio works.
+    """
+    import types
+
+    calls = []
+
+    class Stub:
+        def __init__(self, channel):
+            pass
+
+        def ServerLive(self, request, metadata=None):
+            calls.append(metadata)
+            return types.SimpleNamespace(live=True)
+
+    fake_grpc = types.SimpleNamespace(insecure_channel=lambda endpoint: object())
+    fake_pb = types.SimpleNamespace(ServerLiveRequest=lambda: object())
+    fake_pb_grpc = types.SimpleNamespace(GRPCInferenceServiceStub=Stub)
+
+    monkeypatch.setitem(sys.modules, "grpc", fake_grpc)
+    monkeypatch.setitem(sys.modules, "galemind.grpc_predict_v2_pb2", fake_pb)
+    monkeypatch.setitem(sys.modules, "galemind.grpc_predict_v2_pb2_grpc", fake_pb_grpc)
+
+    from galemind import GrpcClient
+
+    assert GrpcClient("127.0.0.1:8001", token="s3cret").server_live()
+    assert calls == [[("authorization", "Bearer s3cret")]]
+
+    calls.clear()
+    assert GrpcClient("127.0.0.1:8001").server_live()
+    assert calls == [None], "no token configured, no metadata invented"

@@ -12,3 +12,7 @@ half.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# The authentication trait is async, so its tests need a runtime.
+tokio.workspace = true

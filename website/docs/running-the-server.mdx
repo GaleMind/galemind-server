@@ -1,0 +1,89 @@
+---
+id: running-the-server
+title: Running the server
+sidebar_position: 4
+description: Every option, its environment variable and its default.
+---
+
+# Running the server
+
+```bash
+cargo run --release -p galemind -- serve
+```
+
+Every option has an environment variable, so a container needs no arguments.
+`make run` loads `.env` first.
+
+## Addresses and the repository
+
+| Option | Variable | Default |
+|---|---|---|
+| `--rest-address` | `GALEMIND_REST_ADDRESS` | `0.0.0.0:8000` |
+| `--grpc-address` | `GALEMIND_GRPC_ADDRESS` | `0.0.0.0:8001` |
+| `--listen-backlog` | `GALEMIND_LISTEN_BACKLOG` | `4096` |
+| `--model-repository` | `GALEMIND_MODEL_REPOSITORY` | `models` |
+| `--store` | `GALEMIND_STORE` | `rocksdb` |
+| `--store-path` | `GALEMIND_STORE_PATH` | `data/models.db` |
+| `--preload` | `GALEMIND_PRELOAD` | off |
+
+With the default `rocksdb` store the directory tree is ingested at startup and
+the server serves from RocksDB, so artifacts, their metadata and usage records
+are durable and survive a restart. `--store filesystem` reads the tree
+directly, which is simpler and what the examples here use. `--preload` loads
+every model before reporting readiness, so a readiness probe passing means no
+request will pay for a load.
+
+`--listen-backlog` is the kernel's accept queue, not a connection limit: it
+bounds how many completed handshakes may wait to be accepted, which is what a
+burst of clients connecting at once fills. It matters more than it sounds —
+see [Load testing](./operations/load-testing.mdx#the-accept-queue), where the
+default of 1024 that `TcpListener::bind` would have asked for cost 139 632
+dropped connections.
+
+## Cache, batching, metrics
+
+| Option | Variable | Default | |
+|---|---|---|---|
+| `--cache-capacity` | `GALEMIND_CACHE_CAPACITY` | `8` | Models kept loaded; the least recently used is dropped first |
+| `--cache-ttl-secs` | `GALEMIND_CACHE_TTL_SECS` | `3600` | Unload after this long unused |
+| `--cache-sweep-secs` | `GALEMIND_CACHE_SWEEP_SECS` | `60` | How often to look for them |
+| `--max-batch-size` | `GALEMIND_MAX_BATCH_SIZE` | `32` | Largest batch formed, whatever a model's config says |
+| `--min-batch-window-micros` | `GALEMIND_MIN_BATCH_WINDOW_MICROS` | `200` | Shortest wait for a batch to fill |
+| `--max-batch-window-micros` | `GALEMIND_MAX_BATCH_WINDOW_MICROS` | `5000` | Longest wait; caps the latency batching adds |
+| `--queue-capacity` | `GALEMIND_QUEUE_CAPACITY` | `1024` | Requests that may wait **per model** before the server reports itself overloaded |
+| `--queue-timeout-secs` | `GALEMIND_QUEUE_TIMEOUT_SECS` | `10` | Fail a request that waited this long rather than run it late |
+| `--allow-metrics` | `GALEMIND_ALLOW_METRICS` | `true` | Serve `/metrics` |
+| `--metrics-interval-ms` | `GALEMIND_METRICS_INTERVAL_MS` | `1000` | How often CPU and memory are re-read |
+
+:::warning The cache capacity must cover the repository
+If you intend to serve all of it. This repository holds eleven versions; with
+the default capacity of eight, a round of the whole zoo is a cycle of
+evictions and reloads. The counters `gm_model_cache_eviction_count` and
+`gm_model_cache_miss_count` say when that is happening.
+:::
+
+:::warning The queue capacity is per model
+And it is what the server rejects against: 10 000 requests in flight against
+one model with the default 1024 is an `overloaded` response for most of them
+— correct back-pressure, but not what you wanted if you were trying to
+measure throughput. See [Load testing](./operations/load-testing.mdx).
+:::
+
+## Threads and memory
+
+`--worker-threads`, `--blocking-threads`, `--intra-op-threads`,
+`--parallel-execution`, `--inter-op-threads` and `--cpu-mem-arena` are
+explained where they can be explained properly: [Using the
+cores](./operations/threads.mdx) and [Memory](./operations/memory.mdx).
+
+## Authentication
+
+`--auth-token` (`GALEMIND_AUTH_TOKEN`) requires a bearer token on both
+transports. Off by default; see [Authentication](./api/authentication.mdx).
+
+## Logging
+
+`GALEMIND_LOG` takes a `tracing` filter. At the default `info` a healthy
+server says nothing per request; `galemind=debug,rest_server=debug` turns the
+per-request flow on. See [Following a
+request](./operations/tracing.mdx).

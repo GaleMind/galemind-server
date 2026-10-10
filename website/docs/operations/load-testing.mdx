@@ -1,0 +1,197 @@
+---
+id: load-testing
+title: Load testing
+sidebar_position: 5
+description: What it takes to put ten thousand requests, or ten thousand sockets, on this server.
+---
+
+# Load testing
+
+```bash
+gmctl load building_energy --concurrency 700 --requests 20000 --rows 2 \
+  --report reports/c700.json
+```
+
+```text
+building_energy over http at concurrency 700, 2 rows per request
+  20000 completed, 0 failed in 0.35s
+  57144 requests/s, 114287 rows/s
+  latency ms  min 0.74  p50 11.66  p55 12.11  p90 16.89  p95 18.77  p99 22.97  max 32.99
+  at peak 57641 req/s: cpu 0%  memory 22 MiB  pending 352  mean batch 58.4
+```
+
+The JSON report carries the summary and one tick per metrics poll, each
+pairing what the client measured with what the server reported about itself at
+that moment. Client latency alone cannot tell a slow model from a saturated
+queue; having both on one timeline can.
+
+| Option | |
+|---|---|
+| `--concurrency`, `-c` | Requests in flight, per process |
+| `--requests`, `-n` / `--duration` | How long to run |
+| `--rows` | Rows per request, so client-side batching can be varied |
+| `--processes` | Operating-system processes to run it from |
+| `--stagger-ms` | Delay between starting them |
+| `--max-connections` | Socket ceiling for a multiplexed run |
+| `--warmup`, `--seed`, `--poll-ms`, `--report`, `--samples` | |
+
+## One socket per request, or many requests per socket
+
+A request in flight needs a socket, and a socket is a file descriptor — under
+HTTP/1.1. Under HTTP/2 a request is a *stream*, and many of them share one
+connection: the socket count stops following the concurrency, and the
+descriptor limit stops being the ceiling. The same run, at concurrency 10 000
+against the same server, measured by peak sockets on the server side:
+
+| `--transport` | Peak sockets | Throughput | p50 | p99 |
+|---|---|---|---|---|
+| `http` (HTTP/1.1) | 14 922 | 38 449 req/s | 207 ms | 547 ms |
+| `http2` | **2** | 40 826 req/s | 233 ms | 270 ms |
+| `grpc` | 40 | 48 684 req/s | 194 ms | 304 ms |
+
+So at the usual soft limit of 1024 descriptors, where HTTP/1.1 cannot run at
+all, the other two do:
+
+```bash
+ulimit -n 1024
+
+gmctl --transport http  load building_energy -c 10000 -n 20000
+# error: invalid request: a run at concurrency 10000 over a transport that opens
+# a socket per request needs about 10064 open files, but this process may open
+# only 1024: … or multiplex it instead (`--transport http2` or
+# `--transport grpc`), which carries the same run on a few sockets
+
+gmctl --transport http2 load building_energy -c 10000 -n 20000
+#   20000 completed, 0 failed in 0.47s   42490 requests/s
+
+gmctl --transport grpc  load building_energy -c 10000 -n 20000
+#   20000 completed, 0 failed in 0.41s   48986 requests/s
+```
+
+### The pool is primed before the burst
+
+A pool with nothing in it, handed ten thousand requests at once, has no
+connection to put them on and dials one for each until some are ready. That
+connection storm settles afterwards but leaves thousands of sockets open at
+its peak — the cost multiplexing was chosen to avoid. So a multiplexed run
+establishes its sockets first, at the socket count rather than at the
+concurrency, and the burst then arrives to find connections ready: 2 443 peak
+sockets before this, 28 after.
+
+### The socket ceiling
+
+A multiplexed client opens as many connections as the concurrency suggests, up
+to a ceiling of **256**, which `GALEMIND_MAX_CONNECTIONS` or
+`--max-connections` overrides. Measured at concurrency 10 000 over gRPC, the
+curve is flat enough that the ceiling is about tidiness rather than
+throughput:
+
+```text
+157 channels   46 274 req/s
+ 40 channels   49 761 req/s
+  8 channels   47 192 req/s
+```
+
+## Ten thousand real sockets
+
+Multiplexing answers "can the server take ten thousand requests at once". It
+does not answer "can it take ten thousand *clients*", because ten thousand
+clients are ten thousand sockets in separate address spaces, not streams
+sharing a write loop. For that, use processes:
+
+```bash
+# 10 processes x 1000 connections, each process under its own 1200-descriptor limit
+ulimit -n 1200
+gmctl load building_energy --processes 10 -c 1000 --duration 12 --rows 2 \
+  --stagger-ms 150
+```
+
+```text
+driving building_energy from 10 processes at concurrency 1000 each: 10000 in flight
+
+building_energy over http at concurrency 10000, 2 rows per request
+  587188 completed, 0 failed in 12.27s
+  47864 requests/s, 95728 rows/s
+  latency ms  min 3.53  p50 216.72  p90 238.98  p99 264.02  max 319.60
+  at peak 30306 req/s: cpu 1%  memory 230 MiB  pending 2438  mean batch 45.3
+  10 processes, 10000 sockets
+```
+
+Ten thousand and twelve sockets on the server, nothing failed, no dropped
+connections. The reason it has to be processes is that a descriptor limit is
+per process: one process cannot hold ten thousand sockets under a limit of
+1024 however many tasks it runs, and ten processes holding a thousand each
+need no privilege at all.
+
+Each child is the same binary with the same arguments and a file to report
+into; the parent waits and adds up. Sums are sums — requests, sockets,
+failures — while the rates are computed against the longest wall time, since
+the processes overlapped, and the percentiles are recomputed from their pooled
+samples. Percentiles cannot be averaged, which is why `--processes` collects
+the samples themselves.
+
+:::tip Use `--duration` with `--processes`
+With `--requests` and a stagger, the processes that started first can finish
+before the last one has begun, and the aggregate then describes a run that
+never happened.
+:::
+
+## The accept queue
+
+A listening socket has a queue of connections the kernel has completed the
+handshake for and the server has not yet accepted. When it is full, the kernel
+drops further connection attempts — silently, from the server's side, while
+the client sees a connection that failed for no stated reason.
+
+This is what ten thousand simultaneous connects hit first, and it is nowhere
+near where anyone looks. The first run of the test above, against a server
+that had asked for tokio's default backlog of 1024:
+
+```text
+  7378 completed, 192622 failed in 0.62s
+  failures    internal=192622
+  at peak 2795 req/s: cpu 23%   <- the server was idle
+```
+
+```bash
+nstat -az TcpExtListenOverflows
+# TcpExtListenOverflows   139632
+```
+
+So the backlog is the server's to choose — `--listen-backlog`, default 4096 —
+and the kernel caps whatever is asked for at `net.core.somaxconn`:
+
+```bash
+sysctl -w net.core.somaxconn=16384
+galemind serve --listen-backlog 16384
+```
+
+With the queue deep enough and the starts staggered, the same run dropped
+nothing. `TcpExtListenOverflows` is the counter to watch; a run that fails for
+no reason the client can name is usually this.
+
+## The queue the server rejects against
+
+`--queue-capacity` is per model and defaults to 1024, so 10 000 requests in
+flight against a single model are mostly rejected as `overloaded` — the right
+answer, and not the one you want when measuring:
+
+```bash
+# 10k against one model with the default queue: 87 792 of 100 000 rejected
+gmctl load building_energy -c 10000 -n 100000
+
+# the same run against a server sized for it
+galemind serve --queue-capacity 16384 --max-batch-size 64
+#   99836 completed, 164 failed in 31.36s   (peak 54 704 req/s)
+```
+
+## A checklist, in the order things break
+
+1. **The client's shape.** A pool that cannot hold a connection per worker
+   spends the run reconnecting. `gmctl load` sizes it from `--concurrency`.
+2. **The descriptor limit.** Checked before the run, with the command that
+   raises it — or the suggestion to multiplex instead.
+3. **The accept queue.** `--listen-backlog`, and `net.core.somaxconn` above
+   it.
+4. **The server's per-model queue.** `--queue-capacity`.
+5. **The cores.** [Using the cores](./threads.mdx).

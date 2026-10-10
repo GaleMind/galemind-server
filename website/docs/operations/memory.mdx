@@ -1,0 +1,221 @@
+---
+id: memory
+title: Memory
+sidebar_position: 4
+description: Why a server that starts at 17 MB sits at 200 MB, and how to tell that from a leak.
+---
+
+# Memory
+
+A server that starts at 17 MB and sits at 200 MB after a few hundred requests
+looks like a leak and usually is not one. Two caches are *meant* to grow — the
+model cache holds loaded sessions, and an inference needs room for its
+intermediates — and underneath them two allocators retain what they have
+freed.
+
+## Is it bounded? The staircase test
+
+Drive a model in rounds and watch what the deltas do. Growth that shrinks and
+turns negative is retention; growth that keeps adding the same amount per
+round is a leak. One small model, rounds of 100, 200 and 300 requests at
+concurrency 10:
+
+```text
+round    requests      rss MiB   peak MiB   delta MiB
+0        0                16.8       16.8           -
+1        100              16.8       16.8        +0.0
+2        200              16.8       37.2        +0.0
+3        300              37.2       37.2       +20.4
+```
+
+Then eleven more rounds of the same staircase, 2 700 further requests:
+
+```text
+4..14    100/200/300      37.2       37.2        +0.0   (every round)
+total growth: +0.0 MiB
+```
+
+It reached a high-water mark and stopped. The whole repository — ten models,
+each round driving all of them — reaches a higher one and still stops:
+
+```text
+round    req x model    rss MiB   peak MiB   delta MiB
+0        0                 17.0       17.0          -
+1        100              114.0      154.8      +97.0
+2        200              140.5      167.5      +26.5
+3        300              146.4      172.8       +5.9
+4        100              178.1      189.2      +31.7
+5        200              151.5      210.1      -26.6
+6        300              162.1      210.1      +10.6
+```
+
+```text
+# four more identical passes, 12 000 further requests
+1        300              148.3      221.1      -27.0
+2        300              159.5      221.1      +11.2
+3        300              170.7      221.1      +11.2
+4        300              170.7      221.1       +0.0
+total growth: -4.6 MiB
+```
+
+Twelve thousand requests later it is 4.6 MB *lower* than it started, with the
+peak pinned at 221 MB and not moving. A leak never gives memory back.
+
+## Where the megabytes are
+
+Loading is cheap and running is not. Loading all ten models, one at a time, on
+a fresh server:
+
+```text
+after loading              rss MiB cache MiB rss delta cache delta
+(nothing)                     16.5       0.0         -         -
+building_energy               36.4       0.2     +19.9      +0.2
+building_energy_class         37.6       0.4      +1.2      +0.2
+energy_autoencoder            37.9       0.4      +0.3      +0.0
+feature_scaler                38.0       0.4      +0.1      +0.0
+load_forecast_tcn             38.0       0.5      +0.0      +0.1
+meter_digit_cnn               38.2       0.6      +0.2      +0.1
+occupancy_mlp                 38.2       0.6      +0.0      +0.0
+stackgan_stage1               39.4       1.4      +1.2      +0.8
+stackgan_stage2               41.9       1.5      +2.5      +0.1
+thermal_cnn                   41.9       1.5      +0.0      +0.0
+```
+
+Three things to read off it:
+
+1. **ONNX Runtime costs about 20 MB to start, once.** That is the whole of the
+   first model's +19.9 MB — its own weights are 0.2 MB. Nothing else pays it.
+2. **Sessions are small.** Ten loaded models are 1.5 MB of weights and 25 MB of
+   process, most of which is the runtime, not the models.
+3. **So the climb to 170 MB is not the models being loaded.** It is the
+   requests being answered.
+
+Driving one model — `stackgan_stage2`, which returns `3×256×256` floats, 0.75
+MiB per row — shows where it comes from:
+
+| | resident | peak |
+|---|---|---|
+| idle, ten models loaded | 42 MB | 47 MB |
+| concurrency 1, 1 row | 57 MB | 57 MB |
+| concurrency 10, 1 row | 54 MB | 90 MB |
+| concurrency 10, 4 rows | 173 MB | 237 MB |
+| concurrency 32, 4 rows | 163 MB | 308 MB |
+
+One model, nothing else running, and the whole 17-to-170 climb reproduced. A
+graph that upsamples to 256×256 holds activations far larger than its output
+while it runs: the intermediates of one execution, not the weights, are what
+the allocator has to find room for, and the high-water mark of that is what
+resident memory settles at.
+
+### What actually lowers it
+
+Rows per execution. Not threads — which surprised me, and is worth saying
+plainly because the obvious guess is wrong. The same load, varying
+`--blocking-threads`:
+
+```text
+blocking_threads=24   rss 120.0 MiB   peak 225.4 MiB
+blocking_threads=8    rss 179.0 MiB   peak 222.1 MiB
+blocking_threads=2    rss 125.1 MiB   peak 240.1 MiB
+```
+
+Twelve times fewer threads, same plateau. The reason is the dispatcher: there
+is one per model and it runs one execution at a time, so concurrency against a
+single model becomes a *bigger batch*, not more simultaneous inferences. The
+thread count bounds how many *models* can be executing at once, which is the
+term that matters for a repository of heavy models and not for one.
+
+What does move it is the size of an execution, which is rows per request times
+requests merged:
+
+```text
+--max-batch-size=1    4.0 rows per execution   peak 180.2 MiB
+--max-batch-size=4    6.3 rows per execution   peak 222.8 MiB
+--max-batch-size=16   5.3 rows per execution   peak 254.0 MiB
+```
+
+So a heavy model's plateau comes down by capping `max_batch_size` in its
+`config.json` — which costs throughput, because batching is what buys it — or
+by callers sending fewer rows per request. For a model whose output is
+measured in kilobytes, none of this is worth thinking about.
+
+## What sets the plateau
+
+Measured on this repository, driving all ten models twice over:
+
+| Configuration | start → pass 1 → pass 2 |
+|---|---|
+| `MALLOC_ARENA_MAX=2`, ONNX arena off (**the default**) | 17 → 71 → 69 MB |
+| `MALLOC_ARENA_MAX=2`, ONNX arena on | 17 → 143 → 136 MB |
+| unset, ONNX arena off | 17 → 172 → 196 MB |
+| unset, ONNX arena on | 17 → 169 → 231 MB |
+
+Two conclusions, and the second was the surprise.
+
+### MALLOC_ARENA_MAX is the larger lever
+
+glibc keeps freed memory in per-thread arenas and allows up to eight per core
+by default — 96 on a twelve-core host. Inference frees in large blocks from
+many threads, so those arenas retain most of what a batch allocated, and
+resident memory settles two to three times above what the work in flight
+needs. It has to be set in the environment, because glibc reads it before
+`main` runs; the image and `docker-compose.yml` set it, and a bare-metal
+deployment should too:
+
+```bash
+MALLOC_ARENA_MAX=2 galemind serve
+```
+
+### ONNX Runtime's CPU arena is off by default
+
+That is `session_options.enable_cpu_mem_arena = False` in the Python API and
+`--cpu-mem-arena` here. The arena speeds up repeated runs of the same shape by
+never giving memory back: resident memory settles at the high-water mark of
+the largest batch *each loaded session* has ever seen. With ten models and a
+batch size that varies, that is 136 MB against 69. For a server with one model
+under steady load, where the high-water mark is reached quickly and stays, it
+is free throughput — turn it on and measure.
+
+## Also true, before reaching for a profiler
+
+- **One session per model version, built once and reused.** Building a session
+  parses and optimizes the graph and allocates its weights; building one per
+  request would cost more than the inference and leave the arena to grow
+  behind it. Sessions are built when the cache loads a model and dropped when
+  it unloads one.
+- **Memory pattern is off.** It reuses one allocation plan across runs, which
+  assumes the shapes stay the same; batches here vary in size by design.
+- **The working set of an inference is the dominant term, and it is set by
+  rows per execution rather than by threads.** Measured below.
+
+## The diagnosis recipe
+
+```bash
+# 1. Is it bounded? Drive one model in rounds and watch the plateau.
+for i in 1 2 3 4 5; do
+  gmctl load building_energy -n 2000 -c 32 --rows 8 --poll-ms 0 > /dev/null
+  curl -s localhost:8000/metrics | grep -E '^gm_memory_(usage|peak)_bytes'
+done
+```
+
+```bash
+# 2. Is it the model cache? Compare the resident bytes it admits to with the
+#    process' own.
+curl -s localhost:8000/metrics | grep -E 'gm_model_cache_(entries|resident_bytes)'
+```
+
+```bash
+# 3. Is it eviction churn? A capacity below the repository's size reloads
+#    models continuously, and each reload is a fresh session.
+curl -s localhost:8000/metrics | grep -E 'gm_model_cache_(miss|eviction)_count'
+```
+
+```bash
+# 4. Does it come back? Unload on a short TTL and watch.
+galemind serve --cache-ttl-secs 30 --cache-sweep-secs 5
+```
+
+`gm_memory_peak_bytes` beside `gm_memory_usage_bytes` is the quickest read of
+all: the kernel never lowers the peak, so a process that peaked at 200 MB and
+sits at 70 MB gave its memory back, while one whose current reading tracks its
+peak upwards did not.

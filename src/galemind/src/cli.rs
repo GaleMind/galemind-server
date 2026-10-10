@@ -13,7 +13,7 @@ pub struct Cli {
     pub command: Command,
 
     /// Log filter, in the syntax of `RUST_LOG` (for example `info` or
-    /// `galemind=debug,tower_http=debug`).
+    /// `galemind=debug,rest_server=debug`).
     #[arg(long, global = true, env = "GALEMIND_LOG", default_value = "info")]
     pub log: String,
 }
@@ -87,6 +87,20 @@ pub struct ServeArgs {
     )]
     pub grpc_address: SocketAddr,
 
+    /// Connections the kernel may queue for each port before refusing more.
+    ///
+    /// The accept queue, not a connection limit: it bounds how many
+    /// completed handshakes may wait to be accepted, which is what a burst
+    /// of clients connecting at once fills. The kernel caps it at
+    /// `net.core.somaxconn`, so raising this past that needs the sysctl too.
+    #[arg(
+        long,
+        env = "GALEMIND_LISTEN_BACKLOG",
+        default_value_t = galemind_service::DEFAULT_LISTEN_BACKLOG,
+        value_name = "N"
+    )]
+    pub listen_backlog: u32,
+
     /// Load every model before reporting the server ready.
     #[arg(long, env = "GALEMIND_PRELOAD")]
     pub preload: bool,
@@ -97,12 +111,124 @@ pub struct ServeArgs {
     #[command(flatten)]
     pub batching: BatchingArgs,
 
-    /// Threads ONNX Runtime may use inside one operator; 0 lets it choose.
-    #[arg(long, env = "GALEMIND_INTRA_OP_THREADS", default_value_t = 0)]
-    pub intra_op_threads: usize,
+    #[command(flatten)]
+    pub threads: ThreadArgs,
+
+    #[command(flatten)]
+    pub auth: AuthArgs,
 
     #[command(flatten)]
     pub metrics: MetricsArgs,
+}
+
+/// Who may call the protocol's endpoints.
+///
+/// The server ships open, because the identity provider is a deployment's
+/// choice and the common case is a server reachable only from inside its own
+/// network. A shared secret is the one check that needs no provider, so it is
+/// the one the binary can offer; anything issuing real identities --
+/// Keycloak, or another OIDC provider -- implements
+/// `rest_server::Authenticator` and is wired in here, which is a line of
+/// code rather than a change to the transport.
+///
+/// Health probes and the metrics scrape are never authenticated; see
+/// `rest_server::auth`.
+#[derive(Debug, Args, Clone)]
+pub struct AuthArgs {
+    /// Require this bearer token on every protocol request. Unset leaves the
+    /// server open.
+    ///
+    /// Prefer the environment variable: an argument is visible in the process
+    /// list to every user on the machine.
+    #[arg(long, env = "GALEMIND_AUTH_TOKEN", value_name = "TOKEN")]
+    pub auth_token: Option<String>,
+}
+
+/// How the server is allowed to use the machine's cores.
+///
+/// There are two thread pools and they multiply. Requests are served on async
+/// worker threads, and each model's batches execute on a blocking thread,
+/// where ONNX Runtime may use `intra_op_threads` more inside a single
+/// operator. Ten models being served at once with ONNX Runtime left to choose
+/// for itself is ten thread pools of one-per-core: on a 12-core machine, 120
+/// threads fighting over 12 cores, which costs more in contention than it
+/// gains in parallelism.
+///
+/// The defaults therefore take the parallelism from serving models and
+/// batches side by side -- one worker per core, one thread per operator --
+/// which is the right shape for many small CPU models. A server with one
+/// large model and spare cores is the opposite case, and wants
+/// `--intra-op-threads` raised to match.
+#[derive(Debug, Args, Clone, Copy)]
+pub struct ThreadArgs {
+    /// Async worker threads. 0 means one per core.
+    #[arg(long, env = "GALEMIND_WORKER_THREADS", default_value_t = 0)]
+    pub worker_threads: usize,
+
+    /// Threads for blocking work: one per batch being executed, plus model
+    /// loads and store reads. 0 means twice the core count, with a floor of
+    /// four.
+    ///
+    /// This bounds how many batches can execute at once, so it is also the
+    /// ceiling on how much of the machine inference can take. Tokio's own
+    /// default is 512, which would let a burst across many models start 512
+    /// inferences at once on a 12-core machine.
+    #[arg(long, env = "GALEMIND_BLOCKING_THREADS", default_value_t = 0)]
+    pub blocking_threads: usize,
+
+    /// Threads ONNX Runtime may use inside one operator, per model. 0 lets
+    /// ONNX Runtime choose, which is one per core for every loaded model.
+    ///
+    /// A model's own `config.json` may raise this for itself.
+    #[arg(long, env = "GALEMIND_INTRA_OP_THREADS", default_value_t = 1)]
+    pub intra_op_threads: usize,
+
+    /// Run independent branches of a model's graph at once. Worth it for a
+    /// wide graph such as a large ensemble, pointless for a deep chain, and it
+    /// adds a second ONNX Runtime thread pool per model.
+    #[arg(long, env = "GALEMIND_PARALLEL_EXECUTION")]
+    pub parallel_execution: bool,
+
+    /// Threads ONNX Runtime may use to run independent operators at once; only
+    /// used with `--parallel-execution`. 0 lets ONNX Runtime choose.
+    #[arg(long, env = "GALEMIND_INTER_OP_THREADS", default_value_t = 0)]
+    pub inter_op_threads: usize,
+
+    /// Keep ONNX Runtime's CPU arena allocator.
+    ///
+    /// The arena speeds up repeated runs of the same shape by never giving
+    /// memory back: resident memory settles at the high-water mark of the
+    /// largest batch each loaded model has ever seen. Off by default, because
+    /// a server with many models and a varying batch size pays that as
+    /// unbounded-looking growth. Turn it on for a single model under steady
+    /// load, where the high-water mark is reached quickly and stays.
+    #[arg(long, env = "GALEMIND_CPU_MEM_ARENA")]
+    pub cpu_mem_arena: bool,
+}
+
+impl ThreadArgs {
+    /// Cores the process may use.
+    pub fn cpu_count() -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    }
+
+    /// Async worker threads to start, resolving 0 to one per core.
+    pub fn resolved_worker_threads(&self) -> usize {
+        match self.worker_threads {
+            0 => Self::cpu_count(),
+            n => n,
+        }
+    }
+
+    /// Blocking threads to allow, resolving 0 to twice the core count.
+    pub fn resolved_blocking_threads(&self) -> usize {
+        match self.blocking_threads {
+            0 => (Self::cpu_count() * 2).max(4),
+            n => n.max(1),
+        }
+    }
 }
 
 /// Prometheus metrics reporting.
@@ -223,6 +349,10 @@ mod tests {
         };
         assert_eq!(args.rest_address.port(), 8000);
         assert_eq!(args.grpc_address.port(), 8001);
+        assert_eq!(
+            args.listen_backlog,
+            galemind_service::DEFAULT_LISTEN_BACKLOG
+        );
         assert_eq!(args.repository.model_repository, PathBuf::from("models"));
         assert_eq!(args.repository.store, StoreKind::Rocksdb);
         assert_eq!(args.cache.cache_ttl_secs, 3_600);
@@ -280,6 +410,22 @@ mod tests {
         assert_eq!(batching.max_window(), batching.min_window());
     }
 
+    /// The server ships open; a token is opt-in.
+    #[test]
+    fn there_is_no_authentication_unless_a_token_is_configured() {
+        let cli = Cli::try_parse_from(["galemind", "serve"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert_eq!(args.auth.auth_token, None);
+
+        let cli = Cli::try_parse_from(["galemind", "serve", "--auth-token", "s3cret"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert_eq!(args.auth.auth_token.as_deref(), Some("s3cret"));
+    }
+
     #[test]
     fn metrics_are_served_by_default_and_can_be_turned_off() {
         let cli = Cli::try_parse_from(["galemind", "serve"]).unwrap();
@@ -294,6 +440,66 @@ mod tests {
             panic!("expected serve");
         };
         assert!(!args.metrics.allow_metrics);
+    }
+
+    /// Zero means "one per core" for workers and "twice that" for blocking
+    /// work, so the defaults scale with the machine instead of pinning a
+    /// figure chosen on another one.
+    #[test]
+    fn the_thread_plan_defaults_to_the_machines_core_count() {
+        let cli = Cli::try_parse_from(["galemind", "serve"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        let cores = ThreadArgs::cpu_count();
+
+        assert_eq!(args.threads.worker_threads, 0, "0 means one per core");
+        assert_eq!(args.threads.resolved_worker_threads(), cores);
+        assert_eq!(args.threads.resolved_blocking_threads(), (cores * 2).max(4));
+        // One operator thread per model, not one per core per model.
+        assert_eq!(args.threads.intra_op_threads, 1);
+        assert!(!args.threads.parallel_execution);
+        // The arena is what makes resident memory climb and never fall.
+        assert!(!args.threads.cpu_mem_arena);
+    }
+
+    #[test]
+    fn the_thread_plan_can_be_pinned_explicitly() {
+        let cli = Cli::try_parse_from([
+            "galemind",
+            "serve",
+            "--worker-threads",
+            "4",
+            "--blocking-threads",
+            "8",
+            "--intra-op-threads",
+            "2",
+            "--cpu-mem-arena",
+        ])
+        .unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert_eq!(args.threads.resolved_worker_threads(), 4);
+        assert_eq!(args.threads.resolved_blocking_threads(), 8);
+        assert_eq!(args.threads.intra_op_threads, 2);
+        assert!(args.threads.cpu_mem_arena);
+    }
+
+    /// A blocking pool of zero threads cannot run an inference, so an
+    /// explicit zero means the default rather than nothing.
+    #[test]
+    fn the_blocking_pool_always_has_at_least_one_thread() {
+        let threads = |blocking| ThreadArgs {
+            worker_threads: 0,
+            blocking_threads: blocking,
+            intra_op_threads: 1,
+            parallel_execution: false,
+            inter_op_threads: 0,
+            cpu_mem_arena: false,
+        };
+        assert!(threads(0).resolved_blocking_threads() >= 4);
+        assert_eq!(threads(1).resolved_blocking_threads(), 1);
     }
 
     #[test]
