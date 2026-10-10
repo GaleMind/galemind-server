@@ -1,0 +1,11 @@
+[package]
+name = "galemind-core"
+description = "Framework-agnostic domain model for the GaleMind inference server (Predict Protocol v2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+half.workspace = true
+thiserror.workspace = true

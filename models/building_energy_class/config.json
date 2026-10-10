@@ -1,0 +1,21 @@
+{
+  "platform": "onnx_onnxv1",
+  "max_batch_size": 32,
+  "intra_op_threads": 0,
+  "features": [
+    "floor_area_m2",
+    "occupancy",
+    "outdoor_temp_c",
+    "hour_of_day",
+    "hvac_setpoint_c",
+    "insulation_rating",
+    "is_weekend",
+    "solar_irradiance_w_m2"
+  ],
+  "description": "Classifies a building's energy intensity band.",
+  "classes": [
+    "efficient",
+    "typical",
+    "wasteful"
+  ]
+}

@@ -1,7 +1,45 @@
 [workspace]
 resolver = "3"
 members = [
-    "src/grpc_server",
-    "src/rest_server",
-    "src/galemind",
+    "src/core",
+    "src/onnx",
 ]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Galemind/galemind-server"
+
+[workspace.dependencies]
+galemind-core = { path = "src/core" }
+galemind-onnx = { path = "src/onnx" }
+galemind-store = { path = "src/store" }
+galemind-cache = { path = "src/cache" }
+galemind-batching = { path = "src/batching" }
+galemind-service = { path = "src/service" }
+galemind-client = { path = "src/client/rust" }
+rest_server = { path = "src/rest_server" }
+grpc_server = { path = "src/grpc_server" }
+
+anyhow = "1.0"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive", "env"] }
+half = "2.6"
+prost = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
+tonic = { version = "0.13", features = ["transport"] }
+tonic-build = "0.13"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
