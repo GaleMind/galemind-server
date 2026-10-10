@@ -1,0 +1,54 @@
+# Development environment values
+replicaCount: 1
+
+image:
+  tag: "dev"
+  pullPolicy: Always
+  # digest: from github workflow before using this value.yaml
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 1Gi
+    #nvidia.com/gpu: 1
+  requests:
+    cpu: 250m
+    memory: 512Mi
+    #nvidia.com/gpu: 1
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: galemind-server-dev.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+vault:
+  enabled: true
+  role: "galemind-server-dev"
+  secretPath: "secret/galemind-server/dev"
+
+mlflow:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    limits:
+      cpu: 250m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+env:
+  - name: ENVIRONMENT
+    value: "development"
+  - name: LOG_LEVEL
+    value: "debug"
+  - name: RUST_LOG
+    value: "debug"

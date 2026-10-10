@@ -1,0 +1,5 @@
+apiVersion: v2
+name: galemind-server
+description: A Helm chart for Galemind Server with MLflow integration
+version: 0.1.0
+appVersion: "1.0.0"

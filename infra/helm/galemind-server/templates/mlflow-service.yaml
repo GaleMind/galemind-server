@@ -1,0 +1,19 @@
+{{- if .Values.mlflow.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "galemind-server.fullname" . }}-mlflow
+  labels:
+    {{- include "galemind-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mlflow
+spec:
+  type: {{ .Values.mlflow.service.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.mlflow.service.port | default 5000 }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "galemind-server.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mlflow
+{{- end }}

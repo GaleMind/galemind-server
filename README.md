@@ -37,6 +37,7 @@ gmctl infer building_energy --rows 4
 - [Memory](#memory)
 - [Following a request](#following-a-request)
 - [Docker](#docker)
+- [Deployment](#deployment)
 - [Project layout](#project-layout)
 - [The documentation site](#the-documentation-site)
 
@@ -1338,6 +1339,21 @@ the server and writes its report to `./reports`:
 ```bash
 LOAD_MODEL=stackgan_stage1 LOAD_CONCURRENCY=32 docker compose run --rm load
 ```
+
+## Deployment
+
+`.github/workflows/docker-build-push-maybe-deploy.yaml` builds the image and,
+on success, pushes it to the `galemindzen` private repository on Docker Hub.
+It fires on a push to `main` or `develop`, and on any `v*` tag. A tag whose
+name ends in `+k8s` also deploys the image onto GaleMind's Linode Kubernetes
+cluster.
+
+The cluster side lives under `infra/helm`. `galemind-server/` is the chart --
+deployment, service, ingress, service account, and an MLflow deployment with
+its own service, secret and volume claim -- and `environments/` holds the
+per-environment values for `dev`, `staging` and `production`, which differ in
+replica count, resource limits and ingress host. `infra/README.md` covers
+installing and upgrading a release by hand.
 
 ## Project layout
 

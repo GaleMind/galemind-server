@@ -1,0 +1,90 @@
+# Production environment values
+replicaCount: 3
+
+image:
+  tag: "v1.0.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+    #nvidia.com/gpu: 2
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+    #nvidia.com/gpu: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: galemind-server.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: galemind-server-prod-tls
+      hosts:
+        - galemind-server.example.com
+
+vault:
+  enabled: true
+  role: "galemind-server-prod"
+  secretPath: "secret/galemind-server/production"
+
+mlflow:
+  enabled: true
+  replicaCount: 2
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: "fast-ssd"
+  database:
+    enabled: true
+    uri: "postgresql://mlflow:password@postgres:5432/mlflow"
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+env:
+  - name: ENVIRONMENT
+    value: "production"
+  - name: LOG_LEVEL
+    value: "warn"
+  - name: RUST_LOG
+    value: "warn"
+
+#nodeSelector:
+#  node-type: "gpu-enabled"
+#  zone: "production"
+#
+#tolerations:
+#  - key: "nvidia.com/gpu"
+#    operator: "Exists"
+#    effect: "NoSchedule"
+
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: accelerator
+          operator: In
+          values:
+          - nvidia-tesla-v100
+          - nvidia-tesla-a100
