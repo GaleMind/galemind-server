@@ -5,7 +5,8 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use galemind_client::{
-    connect, parse_row, rows_to_tensor, sole_input, synthesize_rows, PredictV2Client, Transport,
+    connect, parse_row, rows_to_tensor, scrape, sole_input, synthesize_rows, PredictV2Client,
+    Scrape, Transport,
 };
 use galemind_core::{InferRequest, ModelMetadata, ModelRef, Parameters, RequestedOutput};
 use serde_json::json;
@@ -65,6 +66,23 @@ enum Command {
     Metadata(ModelArgs),
     /// Run an inference.
     Infer(InferArgs),
+    /// Read the server's Prometheus metrics.
+    Metrics(MetricsArgs),
+}
+
+#[derive(Debug, Args)]
+struct MetricsArgs {
+    /// Show only metrics whose name contains this text.
+    #[arg(long, short, value_name = "TEXT")]
+    filter: Option<String>,
+
+    /// Keep printing every this many seconds instead of once.
+    #[arg(long, short, value_name = "SECONDS")]
+    watch: Option<f64>,
+
+    /// Show the raw exposition text as the server sent it.
+    #[arg(long)]
+    raw: bool,
 }
 
 #[derive(Debug, Args)]
@@ -195,6 +213,98 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Infer(args) => infer(client.as_ref(), args, cli.json).await,
+        // Metrics are served over HTTP whichever transport is in use, since the
+        // Predict Protocol has no metrics call of its own.
+        Command::Metrics(args) => {
+            let http = cli
+                .endpoint
+                .unwrap_or_else(|| default_endpoint(Transport::Http).to_string());
+            show_metrics(&http, args, cli.json).await
+        }
+    }
+}
+
+async fn show_metrics(endpoint: &str, args: MetricsArgs, as_json: bool) -> Result<ExitCode> {
+    loop {
+        if args.raw {
+            let url = format!("{}/metrics", endpoint.trim_end_matches('/'));
+            println!("{}", reqwest::get(&url).await?.text().await?);
+        } else {
+            let scraped = scrape(endpoint)
+                .await
+                .with_context(|| format!("cannot read metrics from {endpoint}"))?;
+            print_scrape(&scraped, args.filter.as_deref(), as_json);
+        }
+
+        match args.watch {
+            Some(seconds) if seconds > 0.0 => {
+                tokio::time::sleep(std::time::Duration::from_secs_f64(seconds)).await;
+                if !as_json {
+                    println!();
+                }
+            }
+            _ => return Ok(ExitCode::SUCCESS),
+        }
+    }
+}
+
+fn print_scrape(scraped: &Scrape, filter: Option<&str>, as_json: bool) {
+    let wanted: Vec<_> = scraped
+        .samples
+        .iter()
+        .filter(|sample| filter.is_none_or(|text| sample.name.contains(text)))
+        .collect();
+
+    if as_json {
+        // One object per sample, which is what a timeseries store wants.
+        let samples: Vec<_> = wanted
+            .iter()
+            .map(|sample| {
+                json!({
+                    "name": sample.name,
+                    "labels": sample.labels,
+                    "value": sample.value,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            json!({
+                "scraped_at_unix_ms": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or_default(),
+                "samples": samples,
+            })
+        );
+        return;
+    }
+
+    for sample in wanted {
+        let labels = if sample.labels.is_empty() {
+            String::new()
+        } else {
+            let pairs: Vec<_> = sample
+                .labels
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect();
+            format!("  {{{}}}", pairs.join(" "))
+        };
+        println!(
+            "{:<48}{:>14}{labels}",
+            sample.name,
+            format_value(sample.value)
+        );
+    }
+}
+
+/// Formats a metric value without turning a count into a float.
+fn format_value(value: f64) -> String {
+    if value.is_finite() && value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value:.6}")
     }
 }
 
@@ -417,6 +527,26 @@ mod tests {
     #[test]
     fn a_seed_without_generated_rows_is_refused() {
         assert!(Cli::try_parse_from(["gmctl", "infer", "m", "--seed", "7"]).is_err());
+    }
+
+    #[test]
+    fn metrics_can_be_watched_and_filtered() {
+        let cli =
+            Cli::try_parse_from(["gmctl", "metrics", "--filter", "inference", "--watch", "2"])
+                .unwrap();
+        let Command::Metrics(args) = cli.command else {
+            panic!("expected metrics");
+        };
+        assert_eq!(args.filter.as_deref(), Some("inference"));
+        assert_eq!(args.watch, Some(2.0));
+        assert!(!args.raw);
+    }
+
+    #[test]
+    fn a_whole_number_metric_is_not_printed_as_a_float() {
+        assert_eq!(format_value(12.0), "12");
+        assert_eq!(format_value(0.25), "0.250000");
+        assert_eq!(format_value(f64::INFINITY), "inf");
     }
 
     #[test]

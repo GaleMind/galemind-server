@@ -10,10 +10,12 @@
 
 mod grpc;
 mod http;
+mod metrics;
 mod rows;
 
 pub use grpc::GrpcClient;
 pub use http::HttpClient;
+pub use metrics::{scrape, Sample, Scrape};
 pub use rows::{parse_row, row_width, rows_to_tensor, sole_input, synthesize_rows};
 
 use async_trait::async_trait;

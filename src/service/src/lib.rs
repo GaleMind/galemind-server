@@ -9,9 +9,15 @@
 #![forbid(unsafe_code)]
 
 mod builder;
+mod metrics;
 mod registry;
+mod resources;
 mod service;
 
 pub use builder::{ingest_repository, ServiceBuilder};
+pub use metrics::{
+    render_prometheus, FailureReason, MetricsRegistry, ModelMetricsSnapshot, PrometheusReport,
+};
 pub use registry::ModelRegistry;
+pub use resources::{ResourceSampler, ResourceSnapshot};
 pub use service::InferenceService;

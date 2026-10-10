@@ -100,6 +100,36 @@ pub struct ServeArgs {
     /// Threads ONNX Runtime may use inside one operator; 0 lets it choose.
     #[arg(long, env = "GALEMIND_INTRA_OP_THREADS", default_value_t = 0)]
     pub intra_op_threads: usize,
+
+    #[command(flatten)]
+    pub metrics: MetricsArgs,
+}
+
+/// Prometheus metrics reporting.
+#[derive(Debug, Args)]
+pub struct MetricsArgs {
+    /// Serve Prometheus metrics at /metrics on the HTTP port. Pass
+    /// `--allow-metrics false` to expose nothing but the protocol.
+    #[arg(
+        long,
+        env = "GALEMIND_ALLOW_METRICS",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        value_name = "BOOL"
+    )]
+    pub allow_metrics: bool,
+
+    /// How often to re-read CPU and memory use. Utilisation is a rate, so it
+    /// is measured between readings rather than during a scrape; request
+    /// counters are unaffected and update per request.
+    #[arg(long, env = "GALEMIND_METRICS_INTERVAL_MS", default_value_t = 1_000)]
+    pub metrics_interval_ms: u64,
+}
+
+impl MetricsArgs {
+    pub fn interval(&self) -> Duration {
+        Duration::from_millis(self.metrics_interval_ms.max(100))
+    }
 }
 
 /// How many models stay loaded, and for how long.
@@ -248,6 +278,31 @@ mod tests {
             queue_timeout_secs: 1,
         };
         assert_eq!(batching.max_window(), batching.min_window());
+    }
+
+    #[test]
+    fn metrics_are_served_by_default_and_can_be_turned_off() {
+        let cli = Cli::try_parse_from(["galemind", "serve"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert!(args.metrics.allow_metrics);
+        assert_eq!(args.metrics.interval(), Duration::from_secs(1));
+
+        let cli = Cli::try_parse_from(["galemind", "serve", "--allow-metrics", "false"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert!(!args.metrics.allow_metrics);
+    }
+
+    #[test]
+    fn the_metrics_interval_has_a_floor_so_sampling_cannot_spin() {
+        let metrics = MetricsArgs {
+            allow_metrics: true,
+            metrics_interval_ms: 0,
+        };
+        assert_eq!(metrics.interval(), Duration::from_millis(100));
     }
 
     #[test]

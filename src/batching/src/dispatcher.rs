@@ -56,6 +56,9 @@ pub struct DispatcherMetrics {
     rows: AtomicU64,
     rejected: AtomicU64,
     timed_out: AtomicU64,
+    pending: AtomicU64,
+    queue_duration_micros: AtomicU64,
+    compute_duration_micros: AtomicU64,
 }
 
 /// A point-in-time read of [`DispatcherMetrics`].
@@ -70,6 +73,12 @@ pub struct DispatcherSnapshot {
     pub rejected: u64,
     /// Requests failed because they waited past the queue timeout.
     pub timed_out: u64,
+    /// Requests queued but not yet being executed.
+    pub pending: u64,
+    /// Cumulative time requests spent waiting to be picked up.
+    pub queue_duration_micros: u64,
+    /// Cumulative time spent executing batches in the backend.
+    pub compute_duration_micros: u64,
 }
 
 impl DispatcherMetrics {
@@ -81,6 +90,9 @@ impl DispatcherMetrics {
             rows: self.rows.load(Ordering::Relaxed),
             rejected: self.rejected.load(Ordering::Relaxed),
             timed_out: self.timed_out.load(Ordering::Relaxed),
+            pending: self.pending.load(Ordering::Relaxed),
+            queue_duration_micros: self.queue_duration_micros.load(Ordering::Relaxed),
+            compute_duration_micros: self.compute_duration_micros.load(Ordering::Relaxed),
         }
     }
 }
@@ -150,14 +162,18 @@ impl Dispatcher {
         };
 
         self.metrics.requests.fetch_add(1, Ordering::Relaxed);
-        self.sender.try_send(job).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => {
-                self.metrics.rejected.fetch_add(1, Ordering::Relaxed);
-                debug!(model = %self.key, "queue full, refusing request");
-                InferError::Overloaded
-            }
-            mpsc::error::TrySendError::Closed(_) => {
-                InferError::Internal(format!("dispatcher for {} has stopped", self.key))
+        self.metrics.pending.fetch_add(1, Ordering::Relaxed);
+        self.sender.try_send(job).map_err(|e| {
+            self.metrics.pending.fetch_sub(1, Ordering::Relaxed);
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    self.metrics.rejected.fetch_add(1, Ordering::Relaxed);
+                    debug!(model = %self.key, "queue full, refusing request");
+                    InferError::Overloaded
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    InferError::Internal(format!("dispatcher for {} has stopped", self.key))
+                }
             }
         })?;
 
@@ -215,6 +231,20 @@ async fn run(
         .await;
 
         let kept = drop_expired(batch, &clock, config.queue_timeout, &metrics);
+
+        // A request stops being pending once its batch is about to run, which
+        // is the same point at which its queue time stops accruing.
+        let now = clock.now_millis();
+        for job in &kept {
+            let waited = now.saturating_sub(job.enqueued_millis);
+            metrics
+                .queue_duration_micros
+                .fetch_add(waited.saturating_mul(1_000), Ordering::Relaxed);
+        }
+        metrics
+            .pending
+            .fetch_sub(kept.len() as u64, Ordering::Relaxed);
+
         if kept.is_empty() {
             continue;
         }
@@ -283,6 +313,7 @@ fn drop_expired(
         .filter_map(|job| {
             if now.saturating_sub(job.enqueued_millis) > limit {
                 metrics.timed_out.fetch_add(1, Ordering::Relaxed);
+                metrics.pending.fetch_sub(1, Ordering::Relaxed);
                 let _ = job.reply.send(Err(InferError::Timeout(timeout)));
                 None
             } else {
@@ -302,6 +333,11 @@ async fn execute(
 ) -> (usize, Duration) {
     metrics.batches.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
+    let record_compute = |elapsed: Duration| {
+        metrics
+            .compute_duration_micros
+            .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    };
 
     // A model without a dynamic batch dimension cannot have requests merged,
     // so they are run one after another instead.
@@ -314,7 +350,9 @@ async fn execute(
             let _ = reply.send(result);
         }
         metrics.rows.fetch_add(rows as u64, Ordering::Relaxed);
-        return (rows, started.elapsed());
+        let elapsed = started.elapsed();
+        record_compute(elapsed);
+        return (rows, elapsed);
     }
 
     metrics.merged_batches.fetch_add(1, Ordering::Relaxed);
@@ -331,6 +369,7 @@ async fn execute(
 
     let result = run_blocking(key, Arc::clone(&backend), merged).await;
     let elapsed = started.elapsed();
+    record_compute(elapsed);
     metrics.rows.fetch_add(rows as u64, Ordering::Relaxed);
 
     match result {

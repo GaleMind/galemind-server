@@ -125,6 +125,17 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
     fn unix_millis(&self) -> u64;
 }
 
+/// A source of Prometheus metrics text.
+///
+/// Kept apart from [`Inference`] because serving metrics is not part of the
+/// Predict Protocol: a transport can expose it or not without the protocol
+/// implementation knowing either way.
+#[async_trait]
+pub trait MetricsSource: Send + Sync {
+    /// The current readings, in Prometheus text exposition format.
+    async fn prometheus_text(&self) -> String;
+}
+
 /// Executes a request against a model, hiding resolution, caching and batching.
 #[async_trait]
 pub trait Inference: Send + Sync {

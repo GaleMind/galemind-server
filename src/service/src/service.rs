@@ -1,15 +1,18 @@
 //! The inference service: resolution, caching and batching behind one trait.
 
+use crate::metrics::{render_prometheus, MetricsRegistry, PrometheusReport};
 use crate::registry::ModelRegistry;
+use crate::resources::{ResourceSampler, ResourceSnapshot};
 use async_trait::async_trait;
 use galemind_batching::{BatchPolicy, Dispatcher, DispatcherConfig, DispatcherSnapshot};
 use galemind_core::{
-    CacheStats, Clock, InferError, InferRequest, InferResponse, Inference, ModelCache, ModelKey,
-    ModelMetadata, ModelRef,
+    CacheStats, Clock, InferError, InferRequest, InferResponse, Inference, MetricsSource,
+    ModelCache, ModelKey, ModelMetadata, ModelRef, SERVER_VERSION,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -28,6 +31,11 @@ pub struct InferenceService {
     dispatcher_config: DispatcherConfig,
     dispatchers: RwLock<HashMap<ModelKey, Arc<Dispatcher>>>,
     ready: AtomicBool,
+    metrics: Arc<MetricsRegistry>,
+    resources: ResourceSampler,
+    /// The newest resource reading. Utilisation is a rate, so it is sampled on
+    /// an interval rather than computed inside a metrics scrape.
+    latest_resources: RwLock<ResourceSnapshot>,
 }
 
 impl InferenceService {
@@ -46,6 +54,9 @@ impl InferenceService {
             dispatcher_config,
             dispatchers: RwLock::new(HashMap::new()),
             ready: AtomicBool::new(false),
+            metrics: Arc::new(MetricsRegistry::new()),
+            resources: ResourceSampler::new(),
+            latest_resources: RwLock::new(ResourceSnapshot::default()),
         }
     }
 
@@ -55,6 +66,45 @@ impl InferenceService {
 
     pub fn cache_stats(&self) -> CacheStats {
         self.cache.stats()
+    }
+
+    /// Per-model request counters.
+    pub fn metrics(&self) -> &Arc<MetricsRegistry> {
+        &self.metrics
+    }
+
+    /// Takes a resource reading and keeps it as the newest.
+    ///
+    /// Called on the metrics interval by the server; each reading measures CPU
+    /// use since the previous one.
+    pub async fn sample_resources(&self) -> ResourceSnapshot {
+        let snapshot = self.resources.sample();
+        *self.latest_resources.write().await = snapshot;
+        snapshot
+    }
+
+    /// The newest resource reading.
+    pub async fn resources(&self) -> ResourceSnapshot {
+        *self.latest_resources.read().await
+    }
+
+    /// Gathers everything a metrics scrape reports.
+    pub async fn prometheus_report(&self) -> PrometheusReport {
+        let dispatchers = self
+            .dispatcher_metrics()
+            .await
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        PrometheusReport {
+            server_version: SERVER_VERSION,
+            models: self.metrics.snapshot().await,
+            dispatchers,
+            unresolved_failures: self.metrics.unresolved_failures(),
+            cache: self.cache.stats(),
+            resources: self.resources().await,
+            loaded_models: self.registry.keys().await.len(),
+        }
     }
 
     /// Per-model batching counters, for metrics and diagnostics.
@@ -112,6 +162,45 @@ impl InferenceService {
         }
     }
 
+    /// Resolves, validates and runs a request, reporting the model it resolved
+    /// to so that the outcome can be counted against it.
+    ///
+    /// A request that never resolves has no model to be counted against, which
+    /// is why the model is part of both the success and the failure.
+    async fn infer_inner(
+        &self,
+        request: InferRequest,
+    ) -> std::result::Result<(ModelKey, InferResponse), (Option<ModelKey>, InferError)> {
+        let key = self
+            .registry
+            .resolve(&request.model)
+            .await
+            .map_err(|e| (None, e))?;
+
+        // Loading the model also gives the metadata the request is checked
+        // against, so a malformed request is refused before it is queued.
+        let backend = self
+            .cache
+            .get(&key)
+            .await
+            .map_err(|e| (Some(key.clone()), e))?;
+        if let Err(e) = request.validate_against(backend.metadata()) {
+            return Err((Some(key), e));
+        }
+        drop(backend);
+
+        let dispatcher = self.dispatcher(&key).await;
+        let mut response = dispatcher
+            .submit(request, self.clock.now_millis())
+            .await
+            .map_err(|e| (Some(key.clone()), e))?;
+
+        // The response names the version actually served, as the protocol asks.
+        response.model_name = key.name.clone();
+        response.model_version = key.version.clone();
+        Ok((key, response))
+    }
+
     /// The dispatcher for a model version, started on first use.
     async fn dispatcher(&self, key: &ModelKey) -> Arc<Dispatcher> {
         if let Some(dispatcher) = self.dispatchers.read().await.get(key) {
@@ -136,21 +225,22 @@ impl InferenceService {
 #[async_trait]
 impl Inference for InferenceService {
     async fn infer(&self, request: InferRequest) -> Result<InferResponse> {
-        let key = self.registry.resolve(&request.model).await?;
+        // Timing covers everything the server does with the request, including
+        // resolving and validating it, because that is what a caller waits for.
+        let started = Instant::now();
+        let outcome = self.infer_inner(request).await;
 
-        // Loading the model also gives the metadata the request is checked
-        // against, so a malformed request is refused before it is queued.
-        let backend = self.cache.get(&key).await?;
-        request.validate_against(backend.metadata())?;
-        drop(backend);
+        let elapsed = started.elapsed();
+        match &outcome {
+            Ok((key, _)) => self.metrics.record_success(key, elapsed).await,
+            Err((key, error)) => {
+                self.metrics
+                    .record_failure(key.as_ref(), error, elapsed)
+                    .await
+            }
+        }
 
-        let dispatcher = self.dispatcher(&key).await;
-        let mut response = dispatcher.submit(request, self.clock.now_millis()).await?;
-
-        // The response names the version actually served, as the protocol asks.
-        response.model_name = key.name.clone();
-        response.model_version = key.version.clone();
-        Ok(response)
+        outcome.map(|(_, response)| response).map_err(|(_, e)| e)
     }
 
     async fn metadata(&self, model: &ModelRef) -> Result<ModelMetadata> {
@@ -180,5 +270,12 @@ impl Inference for InferenceService {
 
     async fn models(&self) -> Result<Vec<ModelKey>> {
         Ok(self.registry.keys().await)
+    }
+}
+
+#[async_trait]
+impl MetricsSource for InferenceService {
+    async fn prometheus_text(&self) -> String {
+        render_prometheus(&self.prometheus_report().await)
     }
 }

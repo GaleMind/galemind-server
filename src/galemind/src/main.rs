@@ -9,7 +9,7 @@ use clap::Parser;
 use cli::{Cli, Command, RepositoryArgs, ServeArgs, StoreKind};
 use galemind_batching::{AdaptiveBatchConfig, AdaptiveBatchPolicy, DispatcherConfig};
 use galemind_cache::LruTtlConfig;
-use galemind_core::{BackendRegistry, Inference, ModelStore, SystemClock};
+use galemind_core::{BackendRegistry, Inference, MetricsSource, ModelStore, SystemClock};
 use galemind_onnx::OnnxBackendFactory;
 use galemind_service::{InferenceService, ServiceBuilder};
 use galemind_store::FsModelStore;
@@ -157,9 +157,33 @@ async fn serve(args: ServeArgs) -> Result<()> {
         shutdown.subscribe(),
     ));
 
+    let metrics = if args.metrics.allow_metrics {
+        // One reading is taken up front so the first scrape has something to
+        // compare against rather than reporting a utilisation of zero.
+        service.sample_resources().await;
+        let sampler = tokio::spawn(sample_resources(
+            Arc::clone(&service),
+            args.metrics.interval(),
+            shutdown.subscribe(),
+        ));
+        info!(
+            interval_ms = args.metrics.metrics_interval_ms,
+            "serving Prometheus metrics at /metrics"
+        );
+        Some((sampler, Arc::clone(&service) as Arc<dyn MetricsSource>))
+    } else {
+        info!("metrics reporting is off");
+        None
+    };
+    let (metrics_sampler, metrics_source) = match metrics {
+        Some((sampler, source)) => (Some(sampler), Some(source)),
+        None => (None, None),
+    };
+
     let rest = tokio::spawn(rest_server::serve(
         args.rest_address,
         Arc::clone(&service) as Arc<dyn Inference>,
+        metrics_source,
         wait_for(shutdown.subscribe()),
     ));
     let grpc = tokio::spawn(grpc_server::serve(
@@ -175,6 +199,9 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let (rest, grpc) = tokio::join!(rest, grpc);
     service.shutdown().await;
     sweeper.abort();
+    if let Some(sampler) = metrics_sampler {
+        sampler.abort();
+    }
 
     // Report both outcomes: one transport failing must not hide the other.
     let rest = rest.context("the REST task panicked")?;
@@ -209,6 +236,23 @@ async fn sweep_cache(
                     info!(unloaded, "swept idle models from the cache");
                 }
             }
+            _ = shutdown.recv() => return,
+        }
+    }
+}
+
+/// Re-reads CPU and memory use on the metrics interval, until shutdown.
+async fn sample_resources(
+    service: Arc<InferenceService>,
+    interval: std::time::Duration,
+    mut shutdown: broadcast::Receiver<()>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => { service.sample_resources().await; }
             _ = shutdown.recv() => return,
         }
     }

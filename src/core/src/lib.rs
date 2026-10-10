@@ -28,8 +28,8 @@ pub use model::{
 pub use registry::BackendRegistry;
 pub use tensor::{Tensor, TensorData};
 pub use traits::{
-    Backend, BackendFactory, CacheStats, Clock, Inference, ModelCache, ModelStore, ModelUsage,
-    ModelWriter, UsageIndex,
+    Backend, BackendFactory, CacheStats, Clock, Inference, MetricsSource, ModelCache, ModelStore,
+    ModelUsage, ModelWriter, UsageIndex,
 };
 
 /// The platform string for models served by ONNX Runtime, as named by the

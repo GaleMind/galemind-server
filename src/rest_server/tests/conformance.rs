@@ -4,7 +4,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use galemind_core::{BackendRegistry, Inference};
+use galemind_core::{BackendRegistry, Inference, MetricsSource};
 use galemind_onnx::OnnxBackendFactory;
 use galemind_service::ServiceBuilder;
 use http_body_util::BodyExt;
@@ -24,7 +24,10 @@ async fn app() -> Router {
         .build()
         .expect("service builds");
     service.start(false).await.expect("repository is readable");
-    rest_server::app(service as Arc<dyn Inference>)
+    rest_server::app(
+        Arc::clone(&service) as Arc<dyn Inference>,
+        Some(service as Arc<dyn MetricsSource>),
+    )
 }
 
 async fn get(path: &str) -> (StatusCode, Vec<u8>) {
@@ -317,4 +320,151 @@ async fn endpoints_removed_with_the_chat_layer_are_gone() {
         let (status, _) = get(path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path} should not exist");
     }
+}
+
+// -- metrics, which are not part of the protocol --------------------------
+
+#[tokio::test]
+async fn metrics_are_served_as_prometheus_text_exposition() {
+    let response = app()
+        .await
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    for name in [
+        "gm_server_info",
+        "gm_inference_request_success",
+        "gm_inference_count",
+        "gm_inference_exec_count",
+        "gm_model_cache_entries",
+        "gm_cpu_utilization",
+        "gm_memory_usage_bytes",
+    ] {
+        assert!(text.contains(&format!("# TYPE {name} ")), "missing {name}");
+    }
+}
+
+#[tokio::test]
+async fn an_inference_is_counted_in_the_metrics() {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models");
+    let backends = BackendRegistry::new().with(Arc::new(OnnxBackendFactory::new(1)));
+    let service = ServiceBuilder::new(backends)
+        .with_filesystem_store(repository)
+        .build()
+        .unwrap();
+    service.start(false).await.unwrap();
+
+    let app = rest_server::app(
+        Arc::clone(&service) as Arc<dyn Inference>,
+        Some(Arc::clone(&service) as Arc<dyn MetricsSource>),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v2/models/building_energy/infer")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&infer_body(4)).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let scraped = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = scraped.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(
+        text.contains("gm_inference_request_success{model=\"building_energy\",version=\"1\"} 1"),
+        "{text}"
+    );
+    // A four-row request is one request but four inferences.
+    assert!(
+        text.contains("gm_inference_count{model=\"building_energy\",version=\"1\"} 4"),
+        "{text}"
+    );
+    assert!(
+        text.contains("gm_inference_exec_count{model=\"building_energy\",version=\"1\"} 1"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_request_is_counted_with_its_reason() {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models");
+    let backends = BackendRegistry::new().with(Arc::new(OnnxBackendFactory::new(1)));
+    let service = ServiceBuilder::new(backends)
+        .with_filesystem_store(repository)
+        .build()
+        .unwrap();
+    service.start(false).await.unwrap();
+
+    let app = rest_server::app(
+        Arc::clone(&service) as Arc<dyn Inference>,
+        Some(Arc::clone(&service) as Arc<dyn MetricsSource>),
+    );
+
+    let bad = json!({"inputs": [
+        {"name": "features", "shape": [1, 3], "datatype": "FP32", "data": [1.0, 2.0, 3.0]}
+    ]});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v2/models/building_energy/infer")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&bad).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let scraped = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = scraped.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(
+        text.contains(
+            "gm_inference_request_failure{model=\"building_energy\",version=\"1\",\
+             reason=\"invalid\"} 1"
+        ),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_built_without_metrics_does_not_serve_them() {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models");
+    let backends = BackendRegistry::new().with(Arc::new(OnnxBackendFactory::new(1)));
+    let service = ServiceBuilder::new(backends)
+        .with_filesystem_store(repository)
+        .build()
+        .unwrap();
+    service.start(false).await.unwrap();
+
+    let response = rest_server::app(service as Arc<dyn Inference>, None)
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

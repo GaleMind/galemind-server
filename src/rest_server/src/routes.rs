@@ -11,7 +11,7 @@ use galemind_core::json::{
     JsonParameters, ModelMetadataBody, ServerMetadataBody,
 };
 use galemind_core::{
-    DataType, InferError, InferRequest, Inference, ModelRef, Parameter, Parameters,
+    DataType, InferError, InferRequest, Inference, MetricsSource, ModelRef, Parameter, Parameters,
     RequestedOutput, Tensor, SERVER_NAME, SERVER_VERSION,
 };
 use serde_json::Value;
@@ -226,6 +226,28 @@ fn parameters_from_json(parameters: Option<&JsonParameters>) -> Result<Parameter
         out.insert(name.clone(), parameter);
     }
     Ok(out)
+}
+
+/// Serves Prometheus metrics.
+///
+/// This is not part of the Predict Protocol, which is why it sits outside `/v2`
+/// and is mounted only when a metrics source is supplied: a deployment that
+/// does not want metrics exposed simply does not get the route.
+pub fn metrics_router(metrics: Arc<dyn MetricsSource>) -> Router {
+    Router::new()
+        .route("/metrics", get(scrape))
+        .with_state(metrics)
+}
+
+async fn scrape(State(metrics): State<Arc<dyn MetricsSource>>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            // The version Prometheus itself advertises for text exposition.
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        metrics.prometheus_text().await,
+    )
 }
 
 /// Anything outside the protocol's URLs.
