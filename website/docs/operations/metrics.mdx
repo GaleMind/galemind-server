@@ -70,6 +70,7 @@ A failure that never resolved to a model is counted with empty labels.
 | `gm_server_compute_threads_max` | `blocking × intra_op`; above `gm_cpu_count` the machine is oversubscribed |
 | `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
 | `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
+| `gm_server_allocator` | `system` or `jemalloc`; whether an idle server returns memory |
 
 Utilisation is a rate, so it is sampled on `--metrics-interval-ms` rather than
 computed during a scrape. Counters are cumulative and never reset.

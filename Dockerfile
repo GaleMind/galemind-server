@@ -29,7 +29,7 @@ COPY src/ src/
 # which is why the binaries are copied out before the mount goes away.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
-    cargo build --release --locked -p galemind -p galemind-client \
+    cargo build --release --locked --features jemalloc -p galemind -p galemind-client \
     && mkdir -p /out \
     && cp target/release/galemind target/release/gmctl /out/ \
     && strip /out/galemind /out/gmctl
@@ -59,6 +59,19 @@ COPY --chown=galemind:galemind models/ /app/models/
 
 USER galemind
 
+# The server is built with jemalloc (`--features jemalloc`), which returns
+# unused pages to the kernel on a decay timer where glibc keeps them for the
+# life of the process. Measured on the ten-model repository, standing idle
+# after a pass over every model: glibc held 118 MB indefinitely, and jemalloc
+# with this decay fell from 214 MB to 87 MB with every model still loaded. The
+# decay interval is read before main runs, so it is set here rather than
+# passed as an argument, and it is a window rather than a deadline: pages go
+# back gradually over it.
+#
+# MALLOC_ARENA_MAX is kept even so. It costs nothing under jemalloc, which
+# ignores it, and a container run with an image built without the feature
+# still wants it.
+#
 # MALLOC_ARENA_MAX bounds glibc's per-thread freed-memory arenas, of which it
 # allows up to eight per core by default -- 96 on a twelve-core host.
 # Inference frees in large blocks from many threads, so those arenas retain
@@ -72,7 +85,8 @@ ENV GALEMIND_MODEL_REPOSITORY=/app/models \
     GALEMIND_REST_ADDRESS=0.0.0.0:8000 \
     GALEMIND_GRPC_ADDRESS=0.0.0.0:8001 \
     GALEMIND_LOG=info \
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    _RJEM_MALLOC_CONF=background_thread:true,dirty_decay_ms:60000,muzzy_decay_ms:60000
 
 # 8000 REST, 8001 gRPC. Metrics are served at /metrics on the REST port.
 EXPOSE 8000 8001

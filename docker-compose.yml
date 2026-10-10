@@ -28,7 +28,10 @@ services:
       # capacity below that turns a round of the whole zoo into a cycle of
       # evictions and reloads.
       GALEMIND_CACHE_CAPACITY: "16"
-      GALEMIND_MAX_BATCH_SIZE: "32"
+      # A ceiling on how many requests become one execution. Ten keeps the
+      # working set of a heavy model down; raise it for a throughput-bound
+      # server with one small model.
+      GALEMIND_MAX_BATCH_SIZE: "10"
       # Bounds glibc's per-thread freed-memory arenas. The image sets it
       # too; it is repeated here because it is the single setting that most
       # changes resident memory. See the README's memory section.
@@ -37,6 +40,10 @@ services:
       # net.core.somaxconn on the host has no effect, since the kernel caps
       # what it is asked for; see the README's load-testing section.
       GALEMIND_LISTEN_BACKLOG: "4096"
+      # jemalloc's reclaim window, read before main runs. Pages unused for
+      # this long go back to the kernel, which is what makes an idle server's
+      # resident memory fall; the image is built with the jemalloc feature.
+      _RJEM_MALLOC_CONF: "background_thread:true,dirty_decay_ms:60000,muzzy_decay_ms:60000"
     volumes:
       # The durable store, so ingested artifacts and usage records survive a
       # restart of the container.

@@ -4,6 +4,66 @@
 
 mod cli;
 
+/// jemalloc in place of glibc's allocator, when built with the `jemalloc`
+/// feature.
+///
+/// The reason is reclaim, not speed. glibc keeps freed memory in per-thread
+/// arenas and has no way to hand it back short of `malloc_trim`, which is an
+/// FFI call this crate cannot make; measured here, a server with every model
+/// unloaded and no work in flight still held 70.8 MB against 16.2 MB at
+/// startup, all of it retained by the allocator. jemalloc returns unused
+/// pages on a decay timer instead, which is what makes an idle server give
+/// its memory back -- and it does the unsafe inside its own crate, so this
+/// one stays `forbid(unsafe_code)`.
+///
+/// The decay is configured through jemalloc's own options rather than ours,
+/// because it reads them before `main` runs: `dirty_decay_ms` and
+/// `muzzy_decay_ms` say how long a page may sit unused before being returned,
+/// and `background_thread` is what returns it without waiting for the next
+/// allocation to notice.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// What the metrics call the allocator this binary installed.
+#[cfg(feature = "jemalloc")]
+const ALLOCATOR_NAME: &str = "jemalloc";
+
+/// No `#[global_allocator]`, so whatever the platform provides.
+#[cfg(not(feature = "jemalloc"))]
+const ALLOCATOR_NAME: &str = galemind_service::SYSTEM_ALLOCATOR;
+
+/// Turns on the thread that returns unused pages without being asked.
+///
+/// jemalloc's decay is on by default -- a page unused for ten seconds is
+/// eligible to go back to the operating system -- but something has to
+/// notice, and without a background thread that only happens when the next
+/// allocation walks past it. An idle server makes no allocations, which is
+/// exactly when its memory should be going back, so the thread is enabled
+/// here.
+///
+/// The decay interval itself is read before `main` runs, so it is set in the
+/// environment rather than here:
+///
+/// ```text
+/// _RJEM_MALLOC_CONF=dirty_decay_ms:60000,muzzy_decay_ms:60000
+/// ```
+#[cfg(feature = "jemalloc")]
+fn start_background_reclaim() {
+    match tikv_jemalloc_ctl::background_thread::write(true) {
+        Ok(()) => info!(
+            allocator = "jemalloc",
+            "returning unused pages in the background"
+        ),
+        // Not fatal: without it, pages are still returned, just only when an
+        // allocation happens to notice.
+        Err(e) => warn!(
+            allocator = "jemalloc",
+            "cannot start the background reclaim thread: {e}"
+        ),
+    }
+}
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{Cli, Command, RepositoryArgs, ServeArgs, StoreKind};
@@ -34,6 +94,9 @@ fn main() -> Result<()> {
         .with_env_filter(EnvFilter::new(&cli.log))
         .with_target(true)
         .init();
+
+    #[cfg(feature = "jemalloc")]
+    start_background_reclaim();
 
     // Only serving is worth a tuned runtime; the one-shot commands are I/O
     // bound and take the defaults.
@@ -140,6 +203,9 @@ async fn build_service(args: &ServeArgs) -> Result<Arc<InferenceService>> {
         blocking_threads: args.threads.resolved_blocking_threads(),
         intra_op_threads: onnx.intra_op_threads,
         cpu_mem_arena: onnx.cpu_mem_arena,
+        // This crate installs the global allocator, so this crate is the only
+        // one that can say which one is running.
+        allocator: ALLOCATOR_NAME,
         ..RuntimeInfo::detected()
     };
     info!(

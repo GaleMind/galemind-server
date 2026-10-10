@@ -277,8 +277,17 @@ pub struct CacheArgs {
 /// Limits for the adaptive batcher.
 #[derive(Debug, Args)]
 pub struct BatchingArgs {
-    /// Largest batch the server will form, whatever the traffic.
-    #[arg(long, env = "GALEMIND_MAX_BATCH_SIZE", default_value_t = 32)]
+    /// Largest batch the server will form, whatever the traffic and whatever
+    /// a model's own `max_batch_size` says.
+    ///
+    /// Ten, because the size of an execution is what sets resident memory:
+    /// one model's intermediates at a batch of ten are the difference between
+    /// a plateau of 180 MB and one of 254 MB, measured. A model that wants
+    /// less says so in its `config.json`, which is still honoured -- this is
+    /// a ceiling, not a target -- and a deployment that wants more raises it
+    /// with `GALEMIND_MAX_BATCH_SIZE`, which is what a throughput-bound
+    /// server with one small model should do.
+    #[arg(long, env = "GALEMIND_MAX_BATCH_SIZE", default_value_t = 10)]
     pub max_batch_size: usize,
 
     /// Shortest time to wait for a batch to fill.
@@ -356,7 +365,7 @@ mod tests {
         assert_eq!(args.repository.model_repository, PathBuf::from("models"));
         assert_eq!(args.repository.store, StoreKind::Rocksdb);
         assert_eq!(args.cache.cache_ttl_secs, 3_600);
-        assert_eq!(args.batching.max_batch_size, 32);
+        assert_eq!(args.batching.max_batch_size, 10);
         assert!(!args.preload);
     }
 

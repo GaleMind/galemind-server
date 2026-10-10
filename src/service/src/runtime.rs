@@ -36,7 +36,29 @@ pub struct RuntimeInfo {
     /// threads, so that retention is most of the difference between a server
     /// that settles at 70 MB and one that settles at 200 MB.
     pub malloc_arena_max: Option<usize>,
+    /// The memory allocator the binary was linked against.
+    ///
+    /// Reported because it decides whether an idle server gives its memory
+    /// back. glibc keeps what it has freed in per-thread arenas and has no
+    /// way to return it short of `malloc_trim`; jemalloc returns unused pages
+    /// on a decay timer. Measured on this repository, after driving all ten
+    /// models and then standing idle: glibc held 118 MB indefinitely, and
+    /// jemalloc with a 60-second decay fell from 214 MB to 87 MB with every
+    /// model still loaded. An operator looking at a memory graph needs to
+    /// know which of those two they are looking at.
+    pub allocator: &'static str,
 }
+
+/// The name [`RuntimeInfo::detected`] reports when nobody says otherwise.
+///
+/// Whoever installs a `#[global_allocator]` is the only code that knows what
+/// it installed, and that is the binary, not this crate. So this is the
+/// honest default -- the platform's allocator -- and the binary overrides the
+/// field when it has replaced it. Inferring it here from a feature of *this*
+/// crate is what the first version did, and it reported `system` for a binary
+/// demonstrably running jemalloc, because enabling a feature on a binary does
+/// not enable the same-named feature on its dependencies.
+pub const SYSTEM_ALLOCATOR: &str = "system";
 
 impl RuntimeInfo {
     /// The build's identity, with a thread plan of one worker per core and
@@ -55,6 +77,7 @@ impl RuntimeInfo {
             intra_op_threads: 1,
             cpu_mem_arena: false,
             malloc_arena_max: malloc_arena_max(),
+            allocator: SYSTEM_ALLOCATOR,
         }
     }
 
@@ -102,6 +125,20 @@ pub fn platform() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The allocator has to be reported, because it is what decides whether
+    /// an idle server's memory comes back -- and it has to come from whoever
+    /// installed it, which is the binary.
+    #[test]
+    fn the_allocator_defaults_to_the_platforms_and_can_be_overridden() {
+        assert_eq!(RuntimeInfo::detected().allocator, SYSTEM_ALLOCATOR);
+
+        let replaced = RuntimeInfo {
+            allocator: "jemalloc",
+            ..RuntimeInfo::detected()
+        };
+        assert_eq!(replaced.allocator, "jemalloc");
+    }
 
     /// Only a positive number means anything; anything else is reported as
     /// unset rather than as zero arenas.

@@ -47,7 +47,7 @@ dropped connections.
 | `--cache-capacity` | `GALEMIND_CACHE_CAPACITY` | `8` | Models kept loaded; the least recently used is dropped first |
 | `--cache-ttl-secs` | `GALEMIND_CACHE_TTL_SECS` | `3600` | Unload after this long unused |
 | `--cache-sweep-secs` | `GALEMIND_CACHE_SWEEP_SECS` | `60` | How often to look for them |
-| `--max-batch-size` | `GALEMIND_MAX_BATCH_SIZE` | `32` | Largest batch formed, whatever a model's config says |
+| `--max-batch-size` | `GALEMIND_MAX_BATCH_SIZE` | `10` | Largest batch formed, whatever a model's config says; a ceiling on the size of one execution, which is what sets resident memory |
 | `--min-batch-window-micros` | `GALEMIND_MIN_BATCH_WINDOW_MICROS` | `200` | Shortest wait for a batch to fill |
 | `--max-batch-window-micros` | `GALEMIND_MAX_BATCH_WINDOW_MICROS` | `5000` | Longest wait; caps the latency batching adds |
 | `--queue-capacity` | `GALEMIND_QUEUE_CAPACITY` | `1024` | Requests that may wait **per model** before the server reports itself overloaded |

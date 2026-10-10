@@ -23,5 +23,5 @@ pub use metrics::{
 };
 pub use registry::ModelRegistry;
 pub use resources::{ResourceSampler, ResourceSnapshot};
-pub use runtime::{platform, RuntimeInfo};
+pub use runtime::{platform, RuntimeInfo, SYSTEM_ALLOCATOR};
 pub use service::InferenceService;

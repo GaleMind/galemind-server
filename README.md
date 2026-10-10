@@ -256,7 +256,7 @@ request will pay for a load.
 | `--cache-capacity` | `GALEMIND_CACHE_CAPACITY` | `8` | Models kept loaded; the least recently used is dropped first |
 | `--cache-ttl-secs` | `GALEMIND_CACHE_TTL_SECS` | `3600` | Unload after this long unused |
 | `--cache-sweep-secs` | `GALEMIND_CACHE_SWEEP_SECS` | `60` | How often to look for them |
-| `--max-batch-size` | `GALEMIND_MAX_BATCH_SIZE` | `32` | Largest batch formed, whatever a model's config says |
+| `--max-batch-size` | `GALEMIND_MAX_BATCH_SIZE` | `10` | Largest batch formed, whatever a model's config says; a ceiling on the size of one execution, which is what sets resident memory |
 | `--min-batch-window-micros` | `GALEMIND_MIN_BATCH_WINDOW_MICROS` | `200` | Shortest wait for a batch to fill |
 | `--max-batch-window-micros` | `GALEMIND_MAX_BATCH_WINDOW_MICROS` | `5000` | Longest wait; caps the latency batching adds |
 | `--queue-capacity` | `GALEMIND_QUEUE_CAPACITY` | `1024` | Requests that may wait **per model** before the server reports itself overloaded |
@@ -783,6 +783,7 @@ A failure that never resolved to a model is counted with empty labels.
 | `gm_server_compute_threads_max` | `blocking × intra_op`; above `gm_cpu_count` the machine is oversubscribed |
 | `gm_server_cpu_mem_arena` | 1 when ONNX Runtime's arena allocator is on |
 | `gm_malloc_arena_max` | `MALLOC_ARENA_MAX`, or 0 when unset |
+| `gm_server_allocator` | `system` or `jemalloc`; whether an idle server returns memory |
 
 Utilisation is a rate, so it is sampled on `--metrics-interval-ms` rather than
 computed during a scrape. Counters are cumulative and never reset.
@@ -953,6 +954,75 @@ So a heavy model's plateau comes down by capping `max_batch_size` in its
 `config.json` -- which costs throughput, because batching is what buys it -- or
 by callers sending fewer rows per request. For a model whose output is
 measured in kilobytes, none of this is worth thinking about.
+
+### Giving memory back
+
+Everything above explains why resident memory is what it is. The other
+question is whether it ever comes down, and by default most of it does not.
+Measured after a pass over all ten models, then standing idle:
+
+```text
+                    after load   idle +5s   +15s   +30s
+glibc, models loaded     118.4      118.4   118.4  118.4
+glibc, models unloaded    98.7       70.8    70.8   70.8
+jemalloc, models loaded  248.7      231.6   114.5   95.8
+```
+
+Three mechanisms, and they do different things.
+
+**Unloading a model** returns the session. `--cache-ttl-secs 60` unloads a
+model nobody has asked for in a minute, and `--cache-sweep-secs` is how often
+that is checked. Above, unloading all ten returned 28 MB -- more than the
+1.5 MB of weights the cache accounts for, because a session is its graph, its
+plan and its allocators too. What it does not return is the rest: with every
+model unloaded and nothing in flight, glibc still held 70.8 MB against
+16.2 MB at startup.
+
+**Returning pages to the kernel** is the other 54 MB, and glibc will not do
+it. Freed memory sits in per-thread arenas for the life of the process, and
+the only way out is `malloc_trim`, which is an FFI call these crates cannot
+make under `forbid(unsafe_code)`. So the answer is a different allocator:
+
+```bash
+cargo build --release --features jemalloc
+_RJEM_MALLOC_CONF=background_thread:true,dirty_decay_ms:60000,muzzy_decay_ms:60000 \
+  galemind serve
+```
+
+jemalloc returns pages that have gone unused for `dirty_decay_ms`, and the
+background thread is what notices while the server is idle -- which is exactly
+when nothing else would. With a sixty-second window:
+
+```text
+after load:    rss 213.6 MiB  peak 221.2 MiB
+idle +15s:     rss 213.9 MiB
+idle +30s:     rss 177.0 MiB
+idle +45s:     rss 134.8 MiB
+idle +60s:     rss 113.6 MiB
+idle +75s:      rss 96.0 MiB
+idle +105s:     rss 87.2 MiB
+```
+
+Models stayed loaded throughout, so the next request is answered as fast as
+the last. It is a window and not a deadline: pages go back gradually over it.
+The decay is read before `main` runs, like `MALLOC_ARENA_MAX`, so it is set in
+the environment; the image and `docker-compose.yml` set both, and the image is
+built with the feature. `gm_server_allocator` says which allocator a running
+server has, because a memory graph cannot be read without knowing.
+
+It is not a trade: on the same loads jemalloc was as fast or faster
+(building_energy 54 548 against 46 875 requests a second, stackgan_stage1 280
+against 254), at the cost of a higher transient peak -- it is less eager to
+reuse a page and more willing to give it up.
+
+**Capping the size of an execution** is the third, and it lowers the peak
+rather than recovering from it: `--max-batch-size`, default 10, and a model's
+own `max_batch_size`. See [What actually lowers it](#what-actually-lowers-it).
+
+There is deliberately no "free everything now" call. Returning pages costs
+page faults when the work comes back, which is why both allocators are built
+to wait a while first, and a server that does it after every execution pays
+that cost on every request.
 
 ### How to tell a leak from retention
 

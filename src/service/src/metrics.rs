@@ -297,6 +297,21 @@ pub fn render_prometheus(report: &PrometheusReport) -> String {
         report.runtime.platform, report.runtime.os
     );
 
+    metric(
+        &mut out,
+        "gm_server_allocator",
+        "gauge",
+        "Memory allocator this build uses: `system` for the platform's own, \
+         `jemalloc` for a build that returns unused pages on a decay timer. \
+         It decides whether resident memory falls when the server goes idle, \
+         so a memory graph cannot be read without it. The value is always 1.",
+    );
+    let _ = writeln!(
+        out,
+        "gm_server_allocator{{name=\"{}\"}} 1",
+        report.runtime.allocator
+    );
+
     // -- how the machine is being used ------------------------------------
     //
     // Throughput that stops climbing with concurrency is either a saturated
@@ -685,6 +700,7 @@ mod tests {
                 intra_op_threads: 1,
                 cpu_mem_arena: false,
                 malloc_arena_max: Some(2),
+                allocator: crate::runtime::SYSTEM_ALLOCATOR,
             },
             models,
             dispatchers: dispatchers.into_iter().collect(),
@@ -1000,5 +1016,12 @@ mod tests {
         );
         assert!(text.contains("\ngm_server_cpu_mem_arena 0\n"), "{text}");
         assert!(text.contains("\ngm_malloc_arena_max 2\n"), "{text}");
+        // Which allocator is running decides whether an idle server gives
+        // memory back, so it is reported rather than left to be guessed.
+        assert!(
+            text.contains("gm_server_allocator{name=\"system\"} 1")
+                || text.contains("gm_server_allocator{name=\"jemalloc\"} 1"),
+            "{text}"
+        );
     }
 }

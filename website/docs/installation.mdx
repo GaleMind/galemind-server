@@ -63,6 +63,17 @@ against the newly vendored headers, and the staged archive has to match.
 - Docker builds are unaffected: `.dockerignore` drops `.cargo/`, so they
   compile from source.
 
+## Build features
+
+| Feature | |
+|---|---|
+| `rocksdb-store` | On by default: the durable store. `--no-default-features` falls back to the filesystem store and skips the RocksDB build entirely. |
+| `jemalloc` | Replaces the platform allocator with jemalloc, which returns unused pages to the kernel on a decay timer where glibc keeps them for the life of the process. The container image is built with it; see [Memory](./operations/memory.mdx#giving-memory-back). |
+
+```bash
+cargo build --release --features jemalloc
+```
+
 ## Make targets
 
 | Command | Description |

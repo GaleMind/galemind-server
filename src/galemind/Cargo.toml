@@ -13,6 +13,11 @@ rocksdb-store = [
     "rest_server/rocksdb-store",
     "grpc_server/rocksdb-store",
 ]
+# Replaces glibc's allocator with jemalloc, which returns freed pages to the
+# operating system on a decay timer instead of retaining them. glibc has no
+# way to do that without calling malloc_trim, which needs FFI; jemalloc keeps
+# its unsafe inside its own crate, so this one stays `forbid(unsafe_code)`.
+jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
 [dependencies]
 galemind-core.workspace = true
@@ -28,3 +33,5 @@ clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tikv-jemallocator = { version = "0.7", optional = true }
+tikv-jemalloc-ctl = { version = "0.7", optional = true }
