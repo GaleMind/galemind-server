@@ -3,6 +3,15 @@
 > **Status: superseded** by the bounded queue described in
 > [batching.md](batching.md). Kept because the reason it was replaced is the
 > reason the queue is bounded and rejecting.
+>
+> **The problem.** Bound the inference requests waiting for one model, so that
+> a burst of callers could not grow the server's memory without limit.
+>
+> **How it was solved — and why that was wrong.** A fixed-size ring buffer per
+> model, filled by the transport layer and drained by the batching stage. It
+> bounded memory by *overwriting* the oldest entry once full, which for pending
+> requests means dropping work a caller is still waiting for. The replacement
+> is a bounded queue that rejects instead; see [batching.md](batching.md).
 
 ## What was designed
 

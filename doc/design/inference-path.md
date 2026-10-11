@@ -1,5 +1,15 @@
 # The inference path
 
+> **The problem.** A request touches version resolution, validation, the model
+> cache, a queue and a runtime, and any of them can fail or be slow. Without
+> the path written down, a 503 or a timeout cannot be attributed to the stage
+> that produced it.
+>
+> **How it is solved.** One sequence diagram of every hop, each named with what
+> it is for, and every early exit listed with the error it returns. Each stage
+> is also logged at debug with the time it was reached, so a slow request
+> accuses a stage rather than the server as a whole.
+
 One request, from the socket to the answer. Each hop below is a decision that
 can end the request, which is why the path is worth drawing rather than
 listing.

@@ -40,6 +40,7 @@ gmctl infer building_energy --rows 4
 - [Docker](#docker)
 - [Deployment](#deployment)
 - [Project layout](#project-layout)
+- [Design documentation](#design-documentation)
 - [The documentation site](#the-documentation-site)
 
 ## Prerequisites
@@ -1427,7 +1428,33 @@ runtime, a framework or a storage engine.
 | `src/client/python` | The Python client. |
 | `src/e2e` | The end-to-end suite, in its own workspace. |
 | `scripts/` | Model generators, the RocksDB staging script. |
+| `doc/design/` | The design documents ([below](#design-documentation)). |
 | `website/` | The documentation site. |
+
+## Design documentation
+
+Why the server is built the way it is, one page per decision, under
+[`doc/design/`](doc/design) — start at
+[the index](doc/design/README.md), or go straight to
+[overview.md](doc/design/overview.md) for the layering and the seams.
+
+| | |
+|---|---|
+| [overview.md](doc/design/overview.md) | The layers, the traits everything replaceable sits behind, and the domain types |
+| [views-4plus1.md](doc/design/views-4plus1.md) | Kruchten's logical, process, development and physical views, plus two scenarios |
+| [transports.md](doc/design/transports.md) | Two ports, one service, and how one domain error becomes an HTTP status and a gRPC code |
+| [inference-path.md](doc/design/inference-path.md) | One request from socket to answer, including every way it can end early |
+| [batching.md](doc/design/batching.md) | The per-model dispatcher, the adaptive window, and Little's law |
+| [model-cache.md](doc/design/model-cache.md) | The hot tier: bounded, time-to-live, single-flight |
+| [model-store.md](doc/design/model-store.md) | The cold tier: a directory tree, RocksDB column families, the startup ingest |
+| [backends.md](doc/design/backends.md) | The `Backend` seam, the ONNX Runtime adapter, and its two memory decisions |
+| [concurrency.md](doc/design/concurrency.md) | Two thread pools that multiply, and which flag bounds which |
+| [memory.md](doc/design/memory.md) | The high-water guard, its two-step reclaim, retention versus a leak |
+| [authentication.md](doc/design/authentication.md) | Authentication as a seam, and why the exemption list lives in the domain |
+| [observability.md](doc/design/observability.md) | Triton-compatible metric names, the per-request span, the resource sampler |
+
+Each page ends with the files it describes, so checking one against the code
+is a `grep` rather than a reading.
 
 ## The documentation site
 

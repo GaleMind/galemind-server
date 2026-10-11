@@ -1,5 +1,15 @@
 # Transports: two ports, one service
 
+> **The problem.** The protocol has to be served over two wire formats with
+> different encodings, routing and error vocabularies. Implemented as two
+> servers they drift: a fix to version resolution lands on one port and not the
+> other, and the two come to disagree about what a 404 means.
+>
+> **How it is solved.** One `Inference` implementation behind both ports. Each
+> transport only decodes a request, calls the trait and encodes the answer, and
+> the single `InferError` is mapped once per protocol onto an HTTP status or a
+> gRPC code.
+
 The HTTP and gRPC servers decode a request, call `Inference`, and encode the
 answer. That is all they do. Neither of them knows that a cache, a dispatcher
 or ONNX Runtime exists, which is why there is one service implementation
@@ -58,6 +68,53 @@ protocol sees exactly the protocol.
 
 Listing the catalogue deliberately loads nothing — see
 [model-cache.md](model-cache.md#listing-must-not-load).
+
+## The seam both ports meet at
+
+```mermaid
+classDiagram
+    class Inference {
+        <<trait>>
+        +infer(request) async Result~InferResponse~
+        +metadata(model) async Result~ModelMetadata~
+        +is_model_ready(model) async bool
+        +is_ready() async bool
+        +models() async Result~Vec~
+        +catalogue() async Result~Vec~
+        +model_info(name, load) async Result~ModelInfo~
+    }
+    class InferenceService {
+        -registry: Arc~ModelRegistry~
+        -store: Arc~ModelStore~
+        -cache: Arc~ModelCache~
+        -policy: Arc~BatchPolicy~
+        -dispatchers: RwLock~HashMap~
+        -metrics: Arc~MetricsRegistry~
+    }
+    class RestApp {
+        axum Router
+        +app_with_auth(service, auth)
+    }
+    class GrpcServer {
+        tonic service
+        +serve_with_auth(service, auth)
+    }
+
+    Inference <|.. InferenceService
+    RestApp ..> Inference : depends on
+    GrpcServer ..> Inference : depends on
+```
+
+What the diagram is saying is as much about the edges that are *absent*:
+neither transport has an arrow to `InferenceService`. Each is handed an
+`Arc<dyn Inference>` and cannot reach the concrete type, which is what makes
+"one service behind two protocols" a compile-time fact rather than a
+convention — and why a fix to version resolution cannot land on one port and
+not the other.
+
+Note that `model_info` takes a `load` flag while `catalogue` does not. Loading
+a model to report its signature is an explicit opt-in, because a signature can
+only come from a loaded model; see [model-cache.md](model-cache.md).
 
 ## One error, two vocabularies
 

@@ -1,5 +1,16 @@
 # The model cache
 
+> **The problem.** A loaded model is a live session that cannot be serialized
+> and costs tens of milliseconds to build, so it has to be reused across
+> requests. Keeping every model loaded is unbounded memory; and two requests
+> for the same cold model would each build it, at twice the memory while both
+> are in flight.
+>
+> **How it is solved.** A bounded, time-to-live cache of `Arc<dyn Backend>`
+> with a per-key gate, so concurrent misses load once, and a re-check after the
+> gate so the waiter does not reload what it just waited for. `loaded_keys`
+> sits beside `get` so that reporting what is loaded never loads anything.
+
 A loaded model is a live runtime session: a parsed, optimized graph with its
 weights allocated. It cannot be serialized, so the cache that matters at
 request time is in memory. That makes the repository a two-tier affair.
@@ -26,6 +37,56 @@ graph TB
     class REQ unit;
     class ROCKS,FS store;
 ```
+
+## The types
+
+```mermaid
+classDiagram
+    class ModelCache {
+        <<trait>>
+        +get(key) async Result~Backend~
+        +invalidate(key) async
+        +sweep() async usize
+        +loaded_keys() Vec~ModelKey~
+        +stats() CacheStats
+    }
+    class LruTtlCache {
+        -store: Arc~ModelStore~
+        -registry: Arc~BackendRegistry~
+        -usage: Option~UsageIndex~
+        -clock: Arc~Clock~
+        -entries: Mutex~HashMap~
+        -gates: Mutex~HashMap~
+        -counters: Counters
+    }
+    class LruTtlConfig {
+        +capacity: usize
+        +ttl: Duration
+    }
+    class CacheStats {
+        +entries: usize
+        +hits: u64
+        +misses: u64
+        +evictions: u64
+        +expirations: u64
+        +resident_bytes: usize
+    }
+    class Clock {
+        <<trait>>
+        +now_millis() u64
+        +unix_millis() u64
+    }
+
+    ModelCache <|.. LruTtlCache
+    LruTtlCache *-- LruTtlConfig
+    LruTtlCache o-- Clock
+    ModelCache ..> CacheStats : stats
+```
+
+`gates` is the single-flight machinery below, kept in its own map rather than
+inside the entries: a gate has to exist for a key that is *not* in the cache
+yet, which is precisely the case it guards. And `Clock` is injected rather
+than read from the system, so the time-to-live can be tested without sleeping.
 
 ## How it is bounded
 

@@ -1,5 +1,17 @@
 # Overview: layering and seams
 
+> **The problem.** A server like this has to bind a wire protocol, a model
+> runtime, a storage engine and a thread plan together. Done directly, each of
+> those choices leaks into the others: the transport comes to know that ONNX
+> Runtime exists, a unit test needs RocksDB on the machine, and nothing can be
+> replaced without touching everything beside it.
+>
+> **How it is solved.** Every replaceable part is a trait in a crate that does
+> no I/O, and every dependency arrow points inwards at those traits.
+> `ServiceBuilder` is the one place implementations are injected, so production
+> gets RocksDB and ONNX Runtime while a test gets a memory store and a
+> controllable clock — with no change to the service between them.
+
 GaleMind Server is a CPU inference server that speaks the [Predict Protocol
 v2](https://github.com/kserve/open-inference-protocol) over HTTP and gRPC and
 nothing else. It loads ONNX models from a repository, merges concurrent
@@ -73,6 +85,96 @@ elsewhere:
 `ServiceBuilder` is where they meet. Every part is injected as a trait object,
 so a test supplies a memory store and a controllable clock while production
 supplies RocksDB and the real one, with no change to the service itself.
+
+## The domain types
+
+The traits above are the verbs. These are the nouns they pass around, and all
+of them live in `galemind_core` with no I/O attached:
+
+```mermaid
+classDiagram
+    class ModelRef {
+        +name: String
+        +version: Option~String~
+    }
+    class ModelKey {
+        +name: String
+        +version: String
+        +storage_key() String
+        +from_storage_key(key) ModelKey
+    }
+    class ModelArtifact {
+        +key: ModelKey
+        +platform: String
+        +bytes: Vec~u8~
+        +digest: String
+        +config: ModelConfig
+    }
+    class ModelConfig {
+        +platform: Option~String~
+        +max_batch_size: Option~usize~
+        +intra_op_threads: Option~usize~
+    }
+    class ModelMetadata {
+        +name: String
+        +versions: Vec~String~
+        +platform: String
+        +inputs: Vec~TensorMetadata~
+        +outputs: Vec~TensorMetadata~
+        +max_batch_size: Option~usize~
+        +is_batchable() bool
+    }
+    class TensorMetadata {
+        +name: String
+        +datatype: DataType
+        +shape: Vec~i64~
+    }
+    class InferRequest {
+        +model: ModelRef
+        +id: Option~String~
+        +inputs: Vec~Tensor~
+        +requested_outputs: Vec~RequestedOutput~
+        +validate_against(metadata) Result
+    }
+    class InferResponse {
+        +model_name: String
+        +model_version: String
+        +outputs: Vec~Tensor~
+        +select_outputs(requested) InferResponse
+    }
+    class Tensor {
+        +name: String
+        +shape: Vec~i64~
+        +data: TensorData
+    }
+    class TensorData {
+        <<enum>>
+        Bool · Uint8 · Uint16 · Uint32 · Uint64
+        Int8 · Int16 · Int32 · Int64
+        Fp16 · Bf16 · Fp32 · Fp64
+        Bytes
+        +datatype() DataType
+        +len() usize
+    }
+
+    ModelRef ..> ModelKey : resolved to
+    ModelArtifact *-- ModelKey
+    ModelArtifact *-- ModelConfig
+    ModelMetadata *-- TensorMetadata
+    InferRequest *-- ModelRef
+    InferRequest *-- Tensor
+    InferResponse *-- Tensor
+    Tensor *-- TensorData
+    InferRequest ..> ModelMetadata : validated against
+    InferRequest ..> InferResponse : answered with
+```
+
+Two distinctions in there carry weight. A `ModelRef` may omit the version and
+a `ModelKey` may not, so resolution is a type change rather than a convention
+— once you hold a `ModelKey`, the version question is settled. And
+`TensorData` is one enum over every protocol datatype rather than a byte
+buffer plus a tag, so a tensor that type-checks cannot disagree with its own
+datatype.
 
 ## Crates
 

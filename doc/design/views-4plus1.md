@@ -1,5 +1,15 @@
 # The 4+1 views
 
+> **The problem.** No single diagram answers both “what are the pieces” and
+> “what runs at once”, so one all-purpose architecture picture is either
+> incomplete or unreadable. A newcomer also has no way to tell which diagram
+> answers the question they actually have.
+>
+> **How it is solved.** Kruchten's four views, each answering one question and
+> none of them the architecture by itself, plus two end-to-end scenarios that
+> tie them together — with a table at the top saying which view to read for
+> which question.
+
 Five diagrams, in Kruchten's arrangement: four views of the same server, and
 the scenarios that tie them together. Each answers a different question, and
 none of them is the architecture by itself.

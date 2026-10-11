@@ -1,5 +1,15 @@
 # Batching
 
+> **The problem.** A CPU model answers ten rows in little more time than one,
+> so serving requests one at a time wastes most of the machine. But waiting for
+> a batch to fill adds latency to every request that waits, and a queue that
+> absorbs a burst must not absorb it silently.
+>
+> **How it is solved.** A dispatcher per model version merges whatever has
+> arrived into a single call, with a window sized from the measured arrival
+> rate and batch latency rather than from a fixed delay. The queue is bounded
+> and rejects with `Overloaded`, so saturation is reported rather than hidden.
+
 Most models answer a batch of rows in little more time than a single row, so
 grouping requests raises throughput sharply. Batching on the server keeps that
 benefit without asking clients to coordinate, and it is the server that can
@@ -43,6 +53,71 @@ flowchart TD
 
 The dispatcher forms the next batch *while* the current one executes rather
 than afterwards, so the backend is not idle during collection.
+
+## The types
+
+```mermaid
+classDiagram
+    class BatchPolicy {
+        <<trait>>
+        +window(stats) Duration
+        +max_batch(stats) usize
+    }
+    class TrafficStats {
+        +arrival_rate_per_sec: f64
+        +batch_latency: Duration
+        +mean_batch_rows: f64
+        +queue_depth: usize
+        +model_max_batch_size: usize
+    }
+    class AdaptiveBatchPolicy {
+        -config: AdaptiveBatchConfig
+    }
+    class AdaptiveBatchConfig {
+        +min_window: Duration
+        +max_window: Duration
+        +max_batch_size: usize
+        +sample_window: usize
+    }
+    class FixedBatchPolicy {
+        for benchmarks and tests
+        +window: Duration
+        +max_batch: usize
+    }
+    class TrafficMeter {
+        -sample_window: usize
+        +record_arrival(now_millis)
+        +record_batch(rows, elapsed)
+        +stats(queue_depth, model_max) TrafficStats
+    }
+    class Dispatcher {
+        -sender: Sender~Job~
+        -worker: JoinHandle
+        +spawn(key, cache, policy, clock, config)
+        +submit(request, now_millis) async
+        +shutdown() async
+    }
+    class DispatcherConfig {
+        +queue_capacity: usize
+        +queue_timeout: Duration
+        +sample_window: usize
+        +max_concurrent_batches: usize
+    }
+
+    BatchPolicy <|.. AdaptiveBatchPolicy
+    BatchPolicy <|.. FixedBatchPolicy
+    AdaptiveBatchPolicy *-- AdaptiveBatchConfig
+    BatchPolicy ..> TrafficStats : reads
+    TrafficMeter ..> TrafficStats : produces
+    Dispatcher o-- BatchPolicy
+    Dispatcher *-- DispatcherConfig
+    Dispatcher *-- TrafficMeter
+```
+
+The policy is a pure function of `TrafficStats` — it reads measurements and
+returns a window and a size, holding no state of its own. The state lives in
+`TrafficMeter`, which the dispatcher owns. That split is what lets the policy
+be tested by handing it numbers rather than by generating traffic.
 
 ## The adaptive policy
 
