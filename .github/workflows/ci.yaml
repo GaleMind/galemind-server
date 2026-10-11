@@ -12,6 +12,13 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    # .cargo/config.toml points ROCKSDB_LIB_DIR at an archive staged by
+    # scripts/stage-rocksdb-lib.sh, which is developer-local and absent from
+    # the checkout. ROCKSDB_COMPILE overrides that and builds the vendored
+    # sources instead.
+    env:
+      ROCKSDB_COMPILE: 1
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -35,8 +42,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # libclang is for bindgen, which librocksdb-sys runs on every build; the
+      # runner's version moves with the image, so let clang-sys find it rather
+      # than pinning a path in LIBCLANG_PATH.
+      - name: Install protoc and libclang
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev
 
       - name: Check formatting
         run: cargo fmt -- --check
